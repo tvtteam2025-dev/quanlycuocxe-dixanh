@@ -1,0 +1,1664 @@
+<!doctype html>
+<html lang="vi">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Đi Xanh - Quản lý đơn hàng</title>
+    <link rel="stylesheet" href="/static/styles.css?v=revenue-red-amount-20260821" />
+  </head>
+  <body>
+    <section id="loginScreen" class="login-screen">
+      <form id="loginForm" class="login-card">
+        <div class="login-brand">
+          <span>Đi Xanh</span>
+          <strong>Đăng nhập hệ thống</strong>
+          <p>Nhập tài khoản để quản lý đơn hàng, xe và báo cáo.</p>
+        </div>
+        <label class="required">
+          Tên đăng nhập
+          <input name="username" type="text" autocomplete="username" required />
+        </label>
+        <label class="required">
+          Mật khẩu
+          <input name="password" type="password" autocomplete="current-password" required />
+        </label>
+        <div class="login-actions">
+          <span id="loginStatus"></span>
+          <button id="loginSubmitButton" type="submit">Đăng nhập</button>
+        </div>
+      </form>
+    </section>
+
+    <div id="appShell" class="layout" hidden>
+      <aside class="sidebar">
+        <div class="brand">
+          <strong>Đi Xanh</strong>
+          <span>Quản lý đơn hàng</span>
+        </div>
+        <nav class="nav-menu" aria-label="Menu chính">
+          <div class="nav-group">
+            <span class="nav-group-title">Tổng quan</span>
+            <div class="nav-group-items">
+              <button class="nav-item active" data-view="dashboard" type="button">Bảng điều hành</button>
+            </div>
+          </div>
+          <div class="nav-group">
+            <span class="nav-group-title">Vận hành</span>
+            <div class="nav-group-items">
+              <button class="nav-item" data-view="orders" type="button">Đơn hàng</button>
+              <button class="nav-item" data-view="calendar" type="button">Lịch điều xe</button>
+              <button class="nav-item" data-view="vehicles" type="button">Xe lên ca</button>
+              <button class="nav-item" data-view="franchiseVehicles" type="button">Xe thương quyền</button>
+            </div>
+          </div>
+          <div class="nav-group">
+            <span class="nav-group-title">Khách hàng &amp; kinh doanh</span>
+            <div class="nav-group-items">
+              <button class="nav-item" data-view="customers" type="button">Khách hàng</button>
+              <button class="nav-item" data-view="contracts" type="button">Hợp đồng/tuyến</button>
+              <button class="nav-item" data-view="contractPricing" type="button">Tra cứu giá hợp đồng</button>
+              <button class="nav-item" data-view="overnightCalculator" type="button">Tính chi phí sử dụng xe</button>
+              <button class="nav-item" data-view="vouchers" type="button">Voucher</button>
+              <button class="nav-item" data-view="promotions" type="button">Khuyến mãi</button>
+              <button class="nav-item" data-view="invoiceOrders" type="button">Hóa đơn</button>
+              <button class="nav-item" data-view="debtOrders" type="button">Công nợ</button>
+              <button class="nav-item" data-view="commissionOrders" type="button">Hoa hồng xe thương quyền</button>
+              <button class="nav-item" data-view="orderFeedback" type="button">Phản hồi khách hàng</button>
+              <button class="nav-item" data-view="cskhShiftReports" type="button">Báo cáo ca CSKH</button>
+              <button class="nav-item" data-view="reports" type="button">Báo cáo</button>
+            </div>
+          </div>
+          <div class="nav-group">
+            <span class="nav-group-title">Quản trị</span>
+            <div class="nav-group-items">
+              <button class="nav-item" data-view="reopenApprovals" type="button">Duyệt mở lại</button>
+              <button class="nav-item" data-view="permissions" type="button">Phân quyền</button>
+              <button class="nav-item" data-view="systemCatalogs" type="button">Quản trị hệ thống</button>
+              <button class="nav-item" data-view="systemLogs" type="button">Lịch sử thay đổi</button>
+            </div>
+          </div>
+        </nav>
+        <div class="sidebar-user">
+          <span id="currentUserLabel">Admin</span>
+          <button class="secondary" id="openChangePasswordButton" type="button">Đổi mật khẩu</button>
+          <button id="logoutButton" type="button">Đăng xuất</button>
+        </div>
+      </aside>
+
+      <main class="content">
+        <header class="topbar">
+          <div>
+            <h1 id="pageTitle">Tổng quan</h1>
+            <p id="pageHint">Theo dõi khách hàng, hợp đồng/tuyến và đơn hàng điều xe.</p>
+          </div>
+          <div class="sync-box">
+            <span id="syncStatus">Đang tải dữ liệu...</span>
+            <button id="refreshButton" type="button">Tải lại</button>
+          </div>
+        </header>
+
+        <section id="dashboardView" class="view active">
+          <div class="dashboard-hero">
+            <div>
+              <span class="dashboard-eyebrow">Điều hành hôm nay</span>
+              <h2 id="dashboardTodayLabel">--/--/----</h2>
+              <p>Theo dõi đơn, xe, doanh thu và các việc cần xử lý trong ngày.</p>
+            </div>
+            <div class="dashboard-actions">
+              <input id="dashboardDateFilter" type="date" aria-label="Chọn ngày xem tổng quan" />
+              <button data-action="dashboard-new-order" type="button">Tạo đơn hàng</button>
+              <button class="secondary" data-action="dashboard-calendar" type="button">Xem lịch điều xe</button>
+            </div>
+          </div>
+
+          <div class="stats-grid dashboard-stats">
+            <article><span>Khách hàng</span><strong id="customerCount">0</strong></article>
+            <article><span>Hợp đồng/tuyến</span><strong id="contractCount">0</strong></article>
+            <article><span>Đơn trong ngày</span><strong id="openOrderCount">0</strong></article>
+            <article><span>Đơn hoàn thành</span><strong id="doneOrderCount">0</strong></article>
+            <article><span>Xe lên ca ngày xem</span><strong id="vehicleCount">0</strong></article>
+            <article><span>Xe trống ngày xem</span><strong id="availableVehicleCount">0</strong></article>
+          </div>
+
+          <div class="dashboard-grid">
+            <section class="panel dashboard-panel money-panel">
+              <div class="panel-title compact"><h2>Dòng tiền ngày xem</h2></div>
+              <div id="dashboardMoneySummary" class="money-stack"></div>
+            </section>
+
+            <section class="panel dashboard-panel">
+              <div class="panel-title compact"><h2>Nguồn khách nổi bật</h2></div>
+              <div id="dashboardTopSources" class="rank-list"></div>
+            </section>
+
+            <section class="panel dashboard-panel">
+              <div class="panel-title compact"><h2>Khu vực đặt xe</h2></div>
+              <div id="dashboardRegions" class="rank-list"></div>
+            </section>
+
+            <section class="panel dashboard-panel full revenue-month-panel">
+              <div class="panel-title compact revenue-month-title-row">
+                <div class="month-revenue-total-card">
+                  <strong id="dashboardMonthRevenueTotal">TỔNG DOANH THU THÁNG --/----: <span class="month-revenue-amount">0đ</span></strong>
+                </div>
+              </div>
+              <div id="dashboardMonthRevenueBars" class="mini-bars month-bars"></div>
+            </section>
+          </div>
+        </section>
+
+        <section id="customersView" class="view">
+          <div class="panel">
+            <div class="panel-title">
+              <h2>Khách hàng</h2>
+              <div class="toolbar-inline">
+                <input id="customerSearch" class="search-input" type="search" placeholder="Tìm tên, SĐT..." />
+                <button id="openCustomerDialogButton" type="button">Thêm khách hàng</button>
+              </div>
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Mã khách</th>
+                    <th>Tên</th>
+                    <th>Số điện thoại</th>
+                    <th>CCCD</th>
+                    <th>Địa chỉ</th>
+                    <th>Loại khách</th>
+                    <th>Năm sinh</th>
+                    <th>Giới tính</th>
+                    <th>Nguồn</th>
+                    <th>Nhân viên nhập</th>
+                  </tr>
+                </thead>
+                <tbody id="customerTable"></tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+
+        <section id="contractPricingView" class="view">
+          <div class="panel contract-pricing-panel">
+            <div class="panel-title">
+              <div><h2>Bảng giá hợp đồng</h2><p class="muted">Nhập số kilomet để tra giá 1 chiều, 2 chiều và thời gian chờ miễn phí.</p></div>
+              <button id="saveContractPricingButton" class="secondary" type="button">Lưu cấu hình bảng giá</button>
+            </div>
+            <div class="contract-pricing-calculator">
+              <div class="contract-pricing-options">
+                <label>Quãng đường (km) <span class="required">*</span><input id="contractPricingKm" type="number" min="1" step="1" placeholder="Ví dụ: 85" /></label>
+                <label class="contract-weekend-option"><input id="contractPricingWeekend" type="checkbox" /> <span><strong>Ngày cuối tuần</strong><small>Cộng thêm 10% vào giá báo</small></span></label>
+              </div>
+              <div id="contractPricingResults" class="contract-pricing-results"><div class="empty">Nhập kilomet để xem báo giá.</div></div>
+            </div>
+            <div id="contractPricingSetup" class="contract-pricing-config">
+              <section><h3>Giá 1 chiều / km</h3><div class="table-wrap"><table><thead><tr><th>Khoảng km</th><th>4 chỗ</th><th>7 chỗ</th><th>16 chỗ</th></tr></thead><tbody id="oneWayPricingTable"></tbody></table></div></section>
+              <section><h3>Phụ phí chiều về</h3><div class="table-wrap"><table><thead><tr><th>Khoảng km</th><th>4 chỗ</th><th>7 chỗ</th><th>16 chỗ</th></tr></thead><tbody id="roundTripPricingTable"></tbody></table></div></section>
+              <section class="contract-waiting-section"><h3>Thời gian chờ miễn phí</h3><div class="table-wrap"><table class="contract-waiting-table"><thead><tr><th>Khoảng giá</th><th>Thời gian</th></tr></thead><tbody id="waitingPricingTable"></tbody></table></div></section>
+            </div>
+            <p id="contractPricingStatus" class="form-status"></p>
+          </div>
+        </section>
+
+        <section id="overnightCalculatorView" class="view">
+          <div class="panel overnight-calculator-panel">
+            <div class="panel-title">
+              <div>
+                <h2>Tính thời gian và chi phí sử dụng xe</h2>
+                <p class="muted">Mỗi khung 22:00–06:00 có phát sinh thời gian sử dụng xe đều được tính 1 đêm, bao gồm cả đêm cuối.</p>
+              </div>
+            </div>
+            <form id="overnightCalculatorForm" class="overnight-calculator-form" novalidate>
+              <div class="form-grid two-col">
+                <label class="required"><span>Ngày giờ đi</span><input id="overnightStartInput" class="datetime-input" type="text" inputmode="numeric" placeholder="dd/MM/yyyy hh:mm" maxlength="16" required /></label>
+                <label class="required"><span>Ngày giờ đến</span><input id="overnightEndInput" class="datetime-input" type="text" inputmode="numeric" placeholder="dd/MM/yyyy hh:mm" maxlength="16" required /></label>
+                <label class="required"><span>Tổng giờ chờ miễn phí</span><input id="overnightFreeWaitInput" type="number" inputmode="decimal" min="0" step="0.01" value="0" required /></label>
+                <label class="required"><span>Tổng giờ xe di chuyển</span><input id="overnightMovingHoursInput" type="number" inputmode="decimal" min="0" step="0.01" value="0" required /></label>
+              </div>
+              <div class="overnight-formula">Công thức: (Tổng giờ sử dụng − giờ di chuyển − giờ chờ miễn phí − tổng giờ lưu đêm) × 50.000đ + số đêm × 500.000đ</div>
+              <div class="overnight-actions"><button type="submit">Tính chi phí</button><button id="overnightResetButton" class="secondary" type="button">Nhập lại</button></div>
+            </form>
+            <div id="overnightCalculatorResult" class="overnight-result" aria-live="polite">
+              <div class="empty">Nhập đầy đủ thông tin để tính thời gian và chi phí sử dụng xe.</div>
+            </div>
+          </div>
+        </section>
+
+        <section id="contractsView" class="view">
+          <div class="panel">
+            <div class="panel-title">
+              <h2>Hợp đồng/tuyến</h2>
+              <div class="toolbar-inline">
+                <input id="contractSearch" class="search-input" type="search" placeholder="Tìm tuyến..." />
+                <button id="openContractDialogButton" type="button">Thêm tuyến</button>
+              </div>
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>STT</th>
+                    <th>Điểm đi</th>
+                    <th>Điểm đến</th>
+                    <th>Tuyến</th>
+                    <th>Ghi chú</th>
+                  </tr>
+                </thead>
+                <tbody id="contractTable"></tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+
+        <section id="orderFeedbackView" class="view">
+          <div class="panel">
+            <div class="panel-title">
+              <h2>Phản hồi khách hàng</h2>
+              <div class="toolbar-inline">
+                <input id="orderFeedbackSearch" class="search-input" type="search" placeholder="Tìm mã đơn, khách hàng, nội dung..." />
+                <select id="orderFeedbackStatusFilter">
+                  <option value="">Tất cả trạng thái</option>
+                  <option value="pending">Chưa phản hồi</option>
+                  <option value="done">Đã phản hồi</option>
+                </select>
+                <input id="orderFeedbackDateFromInput" type="date" aria-label="Từ ngày đi" title="Từ ngày đi" />
+                <input id="orderFeedbackDateToInput" type="date" aria-label="Đến ngày đi" title="Đến ngày đi" />
+              </div>
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Mã đơn</th>
+                    <th>Ngày đi</th>
+                    <th>Hoàn thành</th>
+                    <th>Khách hàng</th>
+                    <th>Chuyến đi</th>
+                    <th>Đánh giá</th>
+                    <th>Phản hồi / xử lý</th>
+                    <th>Trạng thái</th>
+                    <th>Thao tác</th>
+                  </tr>
+                </thead>
+                <tbody id="orderFeedbackTable"></tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+
+        <section id="vouchersView" class="view">
+          <div class="panel">
+            <div class="panel-title">
+              <h2>Voucher</h2>
+              <div class="toolbar-inline">
+                <select id="voucherCampaignFilter" class="search-input campaign-filter">
+                  <option value="">Tất cả chiến dịch</option>
+                </select>
+                <input id="voucherSearch" class="search-input" type="search" placeholder="Tìm mã, chiến dịch..." />
+                <button class="secondary" id="printSelectedVouchersButton" type="button" disabled>In voucher đã chọn</button>
+                <button class="danger" id="deleteVoucherCampaignButton" type="button" hidden>Xóa toàn bộ chiến dịch</button>
+                <button class="secondary" id="openVoucherBatchDialogButton" type="button">Phát hành lô</button>
+                <button id="openVoucherDialogButton" type="button">Thêm voucher</button>
+              </div>
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th><input id="selectAllVouchersCheckbox" type="checkbox" aria-label="Chọn tất cả voucher đang hiển thị" /></th>
+                    <th>STT</th>
+                    <th>Mã voucher</th>
+                    <th>Tên chiến dịch</th>
+                    <th>Giá trị</th>
+                    <th>Hiệu lực</th>
+                    <th>Trạng thái</th>
+                    <th>Khách/đơn đã dùng</th>
+                  </tr>
+                </thead>
+                <tbody id="voucherTable"></tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+
+        <section id="promotionsView" class="view">
+          <div class="panel">
+            <div class="panel-title">
+              <h2>Chương trình khuyến mãi</h2>
+              <div class="toolbar-inline">
+                <input id="promotionSearch" class="search-input" type="search" placeholder="Tìm chương trình..." />
+                <button id="openPromotionDialogButton" type="button">Thêm khuyến mãi</button>
+              </div>
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>STT</th>
+                    <th>Chương trình</th>
+                    <th>Giá trị</th>
+                    <th>Hiệu lực</th>
+                    <th>Trạng thái</th>
+                    <th>Ghi chú</th>
+                  </tr>
+                </thead>
+                <tbody id="promotionTable"></tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+
+        <section id="ordersView" class="view">
+          <div class="panel">
+            <div class="panel-title">
+              <h2>Đơn hàng</h2>
+              <div class="toolbar-inline">
+                <input id="orderSearch" class="search-input" type="search" placeholder="Tìm khách, tuyến, xe..." />
+                <input id="driverRemittanceDateInput" type="date" aria-label="Từ ngày đi" title="Từ ngày đi" />
+                <input id="orderDateToInput" type="date" aria-label="Đến ngày đi" title="Đến ngày đi" />
+                <select id="orderStatusFilter" aria-label="Lọc trạng thái đơn hàng">
+                  <option value="">Tất cả trạng thái đơn</option>
+                  <option value="completed">Đã hoàn thành</option>
+                  <option value="pending">Chưa hoàn thành</option>
+                </select>
+                <select id="driverNotificationStatusFilter" aria-label="Lọc trạng thái gửi tài xế">
+                  <option value="">Tất cả trạng thái gửi tài xế</option>
+                  <option value="driver-sent">Đã gửi tài xế</option>
+                  <option value="driver-unsent">Chưa gửi tài xế</option>
+                </select>
+                <button class="secondary" id="exportDriverRemittanceButton" type="button">Xuất lệnh nộp tiền</button>
+                <button id="openOrderDialogButton" type="button">Tạo đơn hàng</button>
+              </div>
+            </div>
+            <div id="orderQuickSummary" class="order-quick-summary" aria-live="polite">
+              <div class="order-quick-summary-row order-quick-summary-row-top">
+                <article class="order-quick-summary-card">
+                  <span>Tổng số lượng đơn</span>
+                  <strong id="orderSummaryTripCount">0</strong>
+                </article>
+                <article class="order-quick-summary-card">
+                  <span>Tổng tiền xe thương quyền nộp về</span>
+                  <strong id="orderSummaryCommission">0 đ</strong>
+                </article>
+                <article class="order-quick-summary-card">
+                  <span>Tổng công nợ</span>
+                  <strong id="orderSummaryDebt">0 đ</strong>
+                </article>
+                <article class="order-quick-summary-card">
+                  <span>Tổng VAT</span>
+                  <strong id="orderSummaryVat">0 đ</strong>
+                </article>
+                <article class="order-quick-summary-card">
+                  <span>Tổng đã cọc</span>
+                  <strong id="orderSummaryDeposit">0 đ</strong>
+                </article>
+              </div>
+              <div class="order-quick-summary-row order-quick-summary-row-bottom">
+                <article class="order-quick-summary-card">
+                  <span>Tổng cước ban đầu</span>
+                  <strong id="orderSummaryBaseAmount">0 đ</strong>
+                </article>
+                <article class="order-quick-summary-card">
+                  <span>Tổng phụ thu</span>
+                  <strong id="orderSummarySurcharge">0 đ</strong>
+                </article>
+                <article class="order-quick-summary-card">
+                  <span>Tổng giảm giá</span>
+                  <strong id="orderSummaryDiscount">0 đ</strong>
+                </article>
+                <article class="order-quick-summary-card">
+                  <span>Doanh thu</span>
+                  <strong id="orderSummaryAmountDue">0 đ</strong>
+                </article>
+                <article class="order-quick-summary-card">
+                  <span>Tổng thực thu</span>
+                  <strong id="orderSummaryActualReceipt">0 đ</strong>
+                </article>
+              </div>
+            </div>
+            <div class="table-wrap">
+              <table class="order-table">
+                <thead>
+                  <tr>
+                    <th>ID</th>
+                    <th>Khách hàng</th>
+                    <th>Tuyến</th>
+                    <th>Điểm đón / trả</th>
+                    <th>Giá tiền</th>
+                    <th>Xe</th>
+                    <th>Lái xe</th>
+                    <th>Giờ đi</th>
+                    <th>Dự kiến kết thúc</th>
+                    <th>Loại đơn</th>
+                    <th>Hóa đơn</th>
+                    <th>Trạng thái</th>
+                    <th></th>
+                  </tr>
+                </thead>
+                <tbody id="orderTable"></tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+
+        <section id="invoiceOrdersView" class="view">
+          <div class="panel">
+            <div class="panel-title">
+              <h2>Đơn cần xuất hóa đơn</h2>
+              <div class="toolbar-inline">
+                <input id="invoiceOrderSearch" class="search-input" type="search" placeholder="Tìm mã đơn, khách hàng, MST..." />
+                <select id="invoiceStatusFilter">
+                  <option value="">Tất cả trạng thái</option>
+                  <option value="Chưa xuất">Chưa xuất</option>
+                  <option value="Đã xuất">Đã xuất</option>
+                </select>
+                <input id="invoiceReportDateInput" type="date" aria-label="Từ ngày hóa đơn" title="Từ ngày khởi hành" />
+                <input id="invoiceReportDateToInput" type="date" aria-label="Đến ngày hóa đơn" title="Đến ngày khởi hành" />
+                <button class="secondary" id="exportInvoicesReportButton" type="button">Xuất Excel hóa đơn</button>
+                <button id="openInvoiceGroupDialogButton" type="button">Tạo hóa đơn gộp</button>
+              </div>
+            </div>
+            <div id="invoiceReportSummary" class="report-view-summary" aria-live="polite"></div>
+            <div class="table-wrap">
+              <table class="order-table">
+                <thead>
+                  <tr>
+                    <th>Mã đơn</th>
+                    <th>Ngày đi</th>
+                    <th>Khách hàng</th>
+                    <th>Thông tin hóa đơn</th>
+                    <th>Chuyến đi</th>
+                    <th>Tài chính</th>
+                    <th>Trạng thái hóa đơn</th>
+                    <th>Thao tác</th>
+                  </tr>
+                </thead>
+                <tbody id="invoiceOrderTable"></tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+
+        <section id="debtOrdersView" class="view">
+          <div class="panel">
+            <div class="panel-title">
+              <h2>Danh sách đơn hàng công nợ</h2>
+              <div class="toolbar-inline">
+                <input id="debtOrderSearch" class="search-input" type="search" placeholder="Tìm mã đơn, khách hàng, đối tượng công nợ..." />
+                <select id="debtStatusFilter">
+                  <option value="">Tất cả trạng thái</option>
+                  <option value="Chưa thu hồi">Chưa thu hồi</option>
+                  <option value="Đã thu hồi">Đã thu hồi</option>
+                </select>
+                <input id="debtReportDateInput" type="date" aria-label="Từ ngày công nợ" title="Từ ngày khởi hành" />
+                <input id="debtReportDateToInput" type="date" aria-label="Đến ngày công nợ" title="Đến ngày khởi hành" />
+                <button class="secondary" id="exportDebtsReportButton" type="button">Xuất Excel công nợ</button>
+              </div>
+            </div>
+            <div id="debtReportSummary" class="report-view-summary" aria-live="polite"></div>
+            <div class="table-wrap">
+              <table class="order-table">
+                <thead>
+                  <tr>
+                    <th>Mã đơn</th>
+                    <th>Ngày đi</th>
+                    <th>Khách hàng</th>
+                    <th>Đối tượng công nợ</th>
+                    <th>Chuyến đi</th>
+                    <th>Số tiền công nợ</th>
+                    <th>Trạng thái thu hồi</th>
+                    <th>Thao tác</th>
+                  </tr>
+                </thead>
+                <tbody id="debtOrderTable"></tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+
+        <section id="commissionOrdersView" class="view">
+          <div class="panel">
+            <div class="panel-title">
+              <h2>Hoa hồng xe thương quyền</h2>
+              <div class="toolbar-inline">
+                <input id="commissionOrderSearch" class="search-input" type="search" placeholder="Tìm mã đơn, khách hàng, xe, lái xe..." />
+                <select id="commissionStatusFilter">
+                  <option value="">Tất cả trạng thái</option>
+                  <option value="Chưa thu">Chưa thu</option>
+                  <option value="Đã thu">Đã thu</option>
+                </select>
+                <input id="commissionReportDateInput" type="date" aria-label="Từ ngày hoa hồng" title="Từ ngày khởi hành" />
+                <input id="commissionReportDateToInput" type="date" aria-label="Đến ngày hoa hồng" title="Đến ngày khởi hành" />
+                <button class="secondary" id="exportCommissionsReportButton" type="button">Xuất Excel hoa hồng</button>
+              </div>
+            </div>
+            <div id="commissionReportSummary" class="report-view-summary" aria-live="polite"></div>
+            <div class="table-wrap">
+              <table class="order-table">
+                <thead>
+                  <tr>
+                    <th>Mã đơn</th>
+                    <th>Ngày đi</th>
+                    <th>Khách hàng</th>
+                    <th>Xe / lái xe</th>
+                    <th>Chuyến đi</th>
+                    <th>Hoa hồng</th>
+                    <th>Trạng thái thu</th>
+                    <th>Thao tác</th>
+                  </tr>
+                </thead>
+                <tbody id="commissionOrderTable"></tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+
+        <section id="cskhShiftReportsView" class="view">
+          <div class="panel">
+            <div class="panel-title">
+              <div>
+                <h2>Nhập báo cáo ca CSKH</h2>
+                <p class="muted">Chọn ca làm việc và nhập các chỉ số phát sinh trong ca. Nhân viên trực được lấy tự động từ tài khoản đăng nhập.</p>
+              </div>
+            </div>
+            <form id="cskhShiftReportForm">
+              <div class="form-grid four-col">
+                <label class="required"><span>Ngày</span><input name="ngay" type="date" required /></label>
+                <label class="required"><span>Nhân viên trực</span><input name="nhanVienTruc" readonly /></label>
+                <label class="required"><span>Ca làm việc</span><select name="caLamViec" required><option value="1">Ca 1</option><option value="2">Ca 2</option></select></label>
+                <label><span>Thời gian</span><input name="thoiGian" value="07:00 - 14:30" readonly /></label>
+              </div>
+              <div class="form-grid two-col">
+                <label class="required"><span>Số lượng tin nhắn Meta</span><input name="soLuongTinNhanMeta" type="number" min="0" step="1" value="0" required /></label>
+                <label class="required"><span>Số lượng khách phản hồi</span><input name="soLuongKhachPhanHoi" type="number" min="0" step="1" value="0" required /></label>
+                <label class="required"><span>Số lượng cuộc gọi</span><input name="soLuongCuocGoi" type="number" min="0" step="1" value="0" required /></label>
+                <label class="required"><span>Số lượng chat Zalo</span><input name="soLuongChatZalo" type="number" min="0" step="1" value="0" required /></label>
+                <label class="required"><span>Số lượng khách từ website</span><input name="soLuongKhachTuWebsite" type="number" min="0" step="1" value="0" required /></label>
+                <label class="required"><span>Số lượng khách từ Email</span><input name="soLuongKhachTuEmail" type="number" min="0" step="1" value="0" required /></label>
+                <label class="required"><span>Số lượng tin nhắn khách vãng lai</span><input name="soLuongTinNhanKhachVangLai" type="number" min="0" step="1" value="0" required /></label>
+                <label class="required"><span>Số lượng khách phản hồi từ TikTok</span><input name="soLuongKhachPhanHoiTuTiktok" type="number" min="0" step="1" value="0" required /></label>
+                <label class="required"><span>Tổng số lượng đơn chốt (B2C)</span><input name="tongSoLuongDonChot" type="number" min="0" step="1" value="0" required /></label>
+              </div>
+              <div class="form-actions cskh-shift-save-actions">
+                <span id="cskhShiftReportStatus" class="form-status"></span>
+                <button id="cskhShiftReportSubmitButton" type="submit">Lưu báo cáo ca</button>
+              </div>
+            </form>
+            <div class="panel-title compact cskh-report-list-header">
+              <div>
+                <h3>Danh sách báo cáo ca</h3>
+                <p class="muted">Chọn khoảng ngày để xem và xuất Excel.</p>
+              </div>
+              <div class="toolbar-inline cskh-report-range">
+                <label><span>Từ ngày</span><input id="cskhShiftReportFromInput" type="date" aria-label="Từ ngày báo cáo ca CSKH" /></label>
+                <label><span>Đến ngày</span><input id="cskhShiftReportToInput" type="date" aria-label="Đến ngày báo cáo ca CSKH" /></label>
+                <button class="secondary" id="cskhShiftReportExportButton" type="button">Xuất Excel</button>
+              </div>
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead><tr><th>Ngày</th><th>Nhân viên trực</th><th>Ca</th><th>Thời gian</th><th>Tin Meta</th><th>Khách phản hồi</th><th>Cuộc gọi</th><th>Chat Zalo</th><th>Website</th><th>Email</th><th>Khách vãng lai</th><th>Phản hồi TikTok</th><th>Tổng đơn chốt (B2C)</th><th>Thao tác</th></tr></thead>
+                <tbody id="cskhShiftReportTable"></tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+
+        <section id="reportsView" class="view">
+          <div class="panel report-export-panel">
+            <div class="panel-title">
+              <div>
+                <h2>Xuất báo cáo Excel</h2>
+                <p class="muted" id="reportDescription">Chọn loại báo cáo cần xuất.</p>
+              </div>
+            </div>
+            <div class="form-grid three-col report-export-grid">
+              <label>
+                <span>Loại báo cáo</span>
+                <select id="reportTypeSelect"></select>
+              </label>
+              <label id="reportMonthWrap">
+                <span>Tháng báo cáo</span>
+                <input id="reportMonthInput" type="month" />
+              </label>
+              <label id="reportFromWrap">
+                <span>Từ ngày</span>
+                <input id="reportFromInput" type="date" />
+              </label>
+              <label id="reportToWrap">
+                <span>Đến ngày</span>
+                <input id="reportToInput" type="date" />
+              </label>
+            </div>
+            <div class="toolbar-inline report-export-actions">
+              <button id="exportSelectedReportButton" type="button">Xuất báo cáo</button>
+            </div>
+          </div>
+        </section>
+
+        <section id="calendarView" class="view">
+          <div class="panel calendar-panel">
+            <div class="panel-title">
+              <div>
+                <h2>Lịch điều xe</h2>
+                <p class="muted">Chọn ngày để xem xe trống và xe đang bận theo đơn hàng.</p>
+              </div>
+              <div class="toolbar-inline">
+                <input id="calendarDateInput" type="date" />
+                <button class="secondary" id="calendarTodayButton" type="button">Hôm nay</button>
+                <select id="calendarAvailabilityFilter">
+                  <option value="">Tất cả xe</option>
+                  <option value="available">Xe trống</option>
+                  <option value="busy">Đang phục vụ</option>
+                </select>
+                <select id="calendarOwnershipFilter">
+                  <option value="">Tất cả loại xe</option>
+                  <option value="company">Xe công ty</option>
+                  <option value="franchise">Xe thương quyền</option>
+                </select>
+                <button class="secondary hidden" id="calendarResetOrderButton" type="button">Khôi phục thứ tự</button>
+              </div>
+            </div>
+            <div class="dispatch-summary" id="dispatchSummary"></div>
+            <div class="dispatch-timeline" id="dispatchTable"></div>
+          </div>
+        </section>
+
+        <section id="vehiclesView" class="view">
+          <div class="panel">
+            <div class="panel-title">
+              <h2>Xe lên ca</h2>
+              <input id="vehicleSearch" class="search-input" type="search" placeholder="Tìm biển số, lái xe..." />
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Biển số</th>
+                    <th>Ngày lên ca</th>
+                    <th>Số hiệu xe</th>
+                    <th>Loại xe</th>
+                    <th>Số chỗ</th>
+                    <th>Lái xe</th>
+                    <th>Khu vực</th>
+                  </tr>
+                </thead>
+                <tbody id="vehicleTable"></tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+
+        <section id="franchiseVehiclesView" class="view">
+          <div class="panel">
+            <div class="panel-title">
+              <h2>Xe thương quyền</h2>
+              <div class="toolbar-inline">
+                <input id="franchiseVehicleSearch" class="search-input" type="search" placeholder="Tìm biển số, chủ xe, lái xe..." />
+                <button id="openFranchiseVehicleDialogButton" type="button">Thêm xe</button>
+              </div>
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Biển số</th>
+                    <th>Dòng xe</th>
+                    <th>Hiệu xe</th>
+                    <th>Chủ xe</th>
+                    <th>Lái xe</th>
+                    <th>Trạng thái</th>
+                  </tr>
+                </thead>
+                <tbody id="franchiseVehicleTable"></tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+
+        <section id="permissionsView" class="view">
+          <div class="permissions-grid">
+            <section class="panel">
+              <div class="panel-heading">
+                <div>
+                  <h2>Tài khoản</h2>
+                  <p>Admin tạo, chỉnh sửa, phân quyền và quản lý trạng thái tài khoản.</p>
+                </div>
+                <button id="openUserDialogButton" type="button">Tạo tài khoản</button>
+              </div>
+              <div class="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Tài khoản</th>
+                      <th>Nhân sự</th>
+                      <th>Vai trò</th>
+                      <th>Trạng thái</th>
+                      <th>Ngày tạo</th>
+                      <th>Thao tác</th>
+                    </tr>
+                  </thead>
+                  <tbody id="userTable"></tbody>
+                </table>
+              </div>
+            </section>
+          </div>
+        </section>
+
+        <section id="systemCatalogsView" class="view">
+          <section class="panel">
+            <div class="panel-heading">
+              <div>
+                <h2>Danh mục dùng chung</h2>
+                <p>Quản lý các lựa chọn được sử dụng trong biểu mẫu khách hàng, đơn hàng và xe thương quyền.</p>
+              </div>
+            </div>
+            <form id="systemCatalogForm" class="catalog-toolbar">
+              <label>
+                <span>Loại danh mục</span>
+                <select name="loaiDanhMuc" id="systemCatalogType" required></select>
+              </label>
+              <label class="catalog-value-field required">
+                <span>Giá trị mới</span>
+                <input name="giaTri" maxlength="100" placeholder="Nhập giá trị danh mục" required />
+              </label>
+              <button id="systemCatalogSubmitButton" type="submit">Thêm danh mục</button>
+              <span id="systemCatalogFormStatus" class="form-status"></span>
+            </form>
+            <div class="table-wrap">
+              <table>
+                <thead><tr><th>STT</th><th>Loại danh mục</th><th>Giá trị</th><th>Người tạo</th><th>Ngày tạo</th><th>Thao tác</th></tr></thead>
+                <tbody id="systemCatalogTable"></tbody>
+              </table>
+            </div>
+          </section>
+        </section>
+
+        <section id="reopenApprovalsView" class="view">
+          <section class="panel">
+            <div class="panel-heading">
+              <div>
+                <h2>Yêu cầu mở lại đơn</h2>
+                <p>CSKH gửi yêu cầu, admin duyệt hoặc từ chối.</p>
+              </div>
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Mã đơn</th>
+                    <th>Người gửi</th>
+                    <th>Lý do</th>
+                    <th>Trạng thái</th>
+                    <th>Duyệt</th>
+                  </tr>
+                </thead>
+                <tbody id="reopenRequestTable"></tbody>
+              </table>
+            </div>
+          </section>
+        </section>
+
+        <section id="systemLogsView" class="view">
+          <section class="panel">
+            <div class="panel-heading">
+              <div>
+                <h2>Lịch sử thay đổi hệ thống</h2>
+                <p>Theo dõi tài khoản nào đã thay đổi dữ liệu gì trên hệ thống.</p>
+              </div>
+              <div class="toolbar">
+                <input id="systemLogSearch" class="search-input" type="search" placeholder="Tìm tài khoản, mã đối tượng..." />
+                <select id="systemLogActionFilter" aria-label="Lọc thao tác">
+                  <option value="">Tất cả thao tác</option>
+                </select>
+              </div>
+            </div>
+            <div class="table-wrap">
+              <table class="system-log-table">
+                <thead>
+                  <tr>
+                    <th>Thời gian</th>
+                    <th>Người thực hiện</th>
+                    <th>Thao tác</th>
+                    <th>Đối tượng</th>
+                    <th>Nội dung thay đổi</th>
+                    <th>Ghi chú</th>
+                  </tr>
+                </thead>
+                <tbody id="systemLogTable"></tbody>
+              </table>
+            </div>
+          </section>
+        </section>
+      </main>
+    </div>
+
+    <dialog id="userDialog">
+      <form id="userForm" class="dialog-panel">
+        <div class="panel-title">
+          <h2 id="userDialogTitle">Tạo tài khoản</h2>
+          <span id="userFormStatus"></span>
+        </div>
+        <div class="form-grid two-col">
+          <input name="id" type="hidden" />
+          <label class="required">
+            <span>Tài khoản</span>
+            <input name="username" autocomplete="off" required />
+          </label>
+          <label class="required" id="userPasswordField">
+            <span>Mật khẩu</span>
+            <input name="password" type="password" autocomplete="new-password" required minlength="4" />
+          </label>
+          <label class="required">
+            <span>Họ tên nhân viên</span>
+            <input name="displayName" required />
+          </label>
+          <label class="required">
+            <span>Vai trò</span>
+            <select name="role" required>
+              <option value="admin">Admin</option>
+              <option value="ke_toan">Kế toán</option>
+              <option value="cskh">CSKH</option>
+              <option value="marketing">Marketing</option>
+              <option value="ban_giam_doc">Ban Giám đốc</option>
+              <option value="kinh_doanh">Kinh Doanh</option>
+            </select>
+          </label>
+          <label>
+            <span>Trạng thái</span>
+            <select name="status">
+              <option value="active">Đang hoạt động</option>
+              <option value="inactive">Ngừng kích hoạt</option>
+            </select>
+          </label>
+          <label class="permission-checkbox full">
+            <input name="manageSystemCatalogs" type="checkbox" />
+            <span><strong>Quản trị danh mục hệ thống</strong><small>Được thêm và xóa các lựa chọn dùng chung như Nguồn khách.</small></span>
+          </label>
+        </div>
+        <div class="form-actions">
+          <button id="userSubmitButton" type="submit">Lưu tài khoản</button>
+          <button class="secondary" id="userCancelButton" type="button">Hủy</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="changePasswordDialog">
+      <form id="changePasswordForm" class="dialog-panel">
+        <div class="panel-title">
+          <h2>Đổi mật khẩu</h2>
+          <span id="changePasswordFormStatus"></span>
+        </div>
+        <div class="form-grid">
+          <label class="required">
+            <span>Mật khẩu hiện tại</span>
+            <input name="currentPassword" type="password" autocomplete="current-password" required />
+          </label>
+          <label class="required">
+            <span>Mật khẩu mới</span>
+            <input name="newPassword" type="password" autocomplete="new-password" required minlength="4" />
+          </label>
+          <label class="required">
+            <span>Nhập lại mật khẩu mới</span>
+            <input name="confirmPassword" type="password" autocomplete="new-password" required minlength="4" />
+          </label>
+        </div>
+        <div class="form-actions">
+          <button id="changePasswordSubmitButton" type="submit">Lưu mật khẩu</button>
+          <button class="secondary" id="changePasswordCancelButton" type="button">Hủy</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="resetPasswordDialog">
+      <form id="resetPasswordForm" class="dialog-panel">
+        <div class="panel-title">
+          <h2>Reset mật khẩu</h2>
+          <span id="resetPasswordFormStatus"></span>
+        </div>
+        <input name="userId" type="hidden" />
+        <div class="form-grid">
+          <label>
+            <span>Tài khoản</span>
+            <input name="username" readonly />
+          </label>
+          <label class="required">
+            <span>Mật khẩu mới</span>
+            <input name="newPassword" type="password" autocomplete="new-password" required minlength="4" />
+          </label>
+          <label class="required">
+            <span>Nhập lại mật khẩu mới</span>
+            <input name="confirmPassword" type="password" autocomplete="new-password" required minlength="4" />
+          </label>
+        </div>
+        <div class="form-actions">
+          <button id="resetPasswordSubmitButton" type="submit">Reset mật khẩu</button>
+          <button class="secondary" id="resetPasswordCancelButton" type="button">Hủy</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="reopenDialog">
+      <form id="reopenForm" class="dialog-panel">
+        <div class="panel-title">
+          <h2>Yêu cầu mở lại đơn</h2>
+          <span id="reopenFormStatus"></span>
+        </div>
+        <input name="orderId" type="hidden" />
+        <label class="required">
+          <span>Lý do yêu cầu</span>
+          <textarea name="reason" rows="4" placeholder="Nhập lý do cần chuyển đơn về trạng thái chưa hoàn thành..." required></textarea>
+        </label>
+        <div class="form-actions">
+          <button id="reopenSubmitButton" type="submit">Gửi admin duyệt</button>
+          <button class="secondary" id="reopenCancelButton" type="button">Hủy</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="customerDialog">
+      <form id="customerForm" class="dialog-panel">
+        <div class="panel-title">
+          <h2>Thêm khách hàng</h2>
+          <span id="customerFormStatus"></span>
+        </div>
+        <div class="form-grid two-col">
+          <input name="id" type="hidden" />
+          <label class="required">
+            <span>Tên khách hàng</span>
+            <input name="tenKhach" required />
+          </label>
+          <label class="required">
+            <span>Số điện thoại</span>
+            <input name="soDienThoai" inputmode="numeric" autocomplete="tel" maxlength="14" placeholder="0xxxxxxxxx" required />
+          </label>
+          <label>
+            <span>Số CCCD</span>
+            <input name="soCCCD" inputmode="numeric" />
+          </label>
+          <label>
+            <span>Địa chỉ</span>
+            <input name="diaChi" />
+          </label>
+          <label>
+            <span>Loại khách</span>
+            <select name="loaiKhachHang">
+              <option value="">Chọn loại khách</option>
+              <option>Khách cá nhân</option>
+              <option>Khách doanh nghiệp</option>
+            </select>
+          </label>
+          <label>
+            <span>Năm sinh</span>
+            <input name="namSinh" inputmode="numeric" />
+          </label>
+          <label class="required">
+            <span>Giới tính</span>
+            <select name="gioiTinh" required>
+              <option value="">Chọn giới tính</option>
+              <option>Nam</option>
+              <option>Nữ</option>
+              <option>Khác</option>
+            </select>
+          </label>
+          <label class="required">
+            <span>Nguồn khách</span>
+            <select name="nguonKhach" required>
+              <option value="">Chọn nguồn</option>
+              <option>Facebook Ads</option>
+              <option>Tổng đài</option>
+              <option>Tiktok</option>
+              <option>Lái xe giới thiệu</option>
+              <option>Khách cũ</option>
+              <option>Khác</option>
+            </select>
+          </label>
+          <label class="required">
+            <span>Nhân viên nhập</span>
+            <input name="nhanVienNhap" readonly />
+          </label>
+        </div>
+        <div class="form-actions">
+          <button id="customerSubmitButton" type="submit">Lưu khách hàng</button>
+          <button class="secondary" id="customerCancelButton" type="button">Hủy</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="contractDialog">
+      <form id="contractForm" class="dialog-panel">
+        <div class="panel-title">
+          <h2>Thêm hợp đồng/tuyến</h2>
+          <span id="contractFormStatus"></span>
+        </div>
+        <input name="id" type="hidden" />
+        <div class="form-grid two-col">
+          <label class="required">
+            <span>Điểm đi</span>
+            <input name="diemDi" placeholder="Sài Gòn" required />
+          </label>
+          <label class="required">
+            <span>Điểm đến</span>
+            <input name="diemDen" placeholder="Vũng Tàu" required />
+          </label>
+        </div>
+        <label>
+          <span>Ghi chú</span>
+          <textarea name="ghiChu" rows="3"></textarea>
+        </label>
+        <div class="form-actions">
+          <button id="contractSubmitButton" type="submit">Lưu tuyến</button>
+          <button class="secondary" id="contractCancelButton" type="button">Hủy</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="voucherDialog">
+      <form id="voucherForm" class="dialog-panel">
+        <div class="panel-title">
+          <h2>Thêm voucher</h2>
+          <span id="voucherFormStatus"></span>
+        </div>
+        <div class="form-grid two-col">
+          <input name="id" type="hidden" />
+          <label class="required">
+            <span>Mã voucher</span>
+            <input name="maVoucher" required />
+          </label>
+          <label class="required">
+            <span>Tên chiến dịch</span>
+            <input name="tenVoucher" required />
+          </label>
+          <label class="required">
+            <span>Loại giá trị</span>
+            <select name="loaiGiaTri" required>
+              <option value="fixed">Số tiền</option>
+              <option value="percent">Phần trăm</option>
+            </select>
+          </label>
+          <label class="required">
+            <span>Giá trị</span>
+            <input name="giaTri" class="money-input" inputmode="decimal" required />
+          </label>
+          <label>
+            <span>Ngày bắt đầu</span>
+            <input name="ngayBatDau" class="date-input" inputmode="numeric" placeholder="dd/MM/yyyy" />
+          </label>
+          <label>
+            <span>Ngày hết hạn</span>
+            <input name="ngayHetHan" class="date-input" inputmode="numeric" placeholder="dd/MM/yyyy" />
+          </label>
+          <label class="checkbox-line">
+            <input name="khongGioiHanHanDung" type="checkbox" />
+            <span>Không giới hạn hạn sử dụng</span>
+          </label>
+          <label>
+            <span>Trạng thái</span>
+            <select name="trangThai">
+              <option>Đang áp dụng</option>
+              <option>Tạm ngưng</option>
+            </select>
+          </label>
+          <label class="full">
+            <span>Ghi chú</span>
+            <textarea name="ghiChu" rows="3"></textarea>
+          </label>
+        </div>
+        <div class="form-actions">
+          <button id="voucherSubmitButton" type="submit">Lưu voucher</button>
+          <button class="secondary" id="voucherCancelButton" type="button">Hủy</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="voucherBatchDialog">
+      <form id="voucherBatchForm" class="dialog-panel">
+        <div class="panel-title">
+          <h2>Phát hành voucher</h2>
+          <span id="voucherBatchFormStatus"></span>
+        </div>
+        <div class="form-grid two-col">
+          <label class="required full">
+            <span>ID chiến dịch</span>
+            <input
+              name="idChienDich"
+              maxlength="30"
+              pattern="[A-Za-z0-9]+"
+              placeholder="Ví dụ: KH072026"
+              autocomplete="off"
+              required
+            />
+          </label>
+          <label class="required full">
+            <span>Tên chiến dịch</span>
+            <input name="tenLoPhatHanh" placeholder="Ví dụ: Khách hàng khiếu nại T07.2026" required />
+          </label>
+          <label class="required">
+            <span>Loại giá trị</span>
+            <select name="loaiGiaTri" required>
+              <option value="fixed">Số tiền</option>
+              <option value="percent">Phần trăm</option>
+            </select>
+          </label>
+          <label class="required">
+            <span>Giá trị</span>
+            <input name="menhGia" class="money-input" inputmode="decimal" required />
+          </label>
+          <label class="required">
+            <span>Số lượng phát hành</span>
+            <input name="soLuong" type="number" min="1" max="1000" required />
+          </label>
+          <label>
+            <span>Ngày bắt đầu</span>
+            <input name="ngayBatDau" class="date-input" inputmode="numeric" placeholder="dd/MM/yyyy" />
+          </label>
+          <label>
+            <span>Ngày hết hạn</span>
+            <input name="ngayHetHan" class="date-input" inputmode="numeric" placeholder="dd/MM/yyyy" />
+          </label>
+          <label class="full">
+            <span>Ghi chú</span>
+            <textarea name="ghiChu" rows="3"></textarea>
+          </label>
+        </div>
+        <p class="note">Mã voucher được tự sinh theo dạng DX-ID chiến dịch-ID ngắn gồm 6 ký tự, ví dụ: DX-KH072026-A7K9P2.</p>
+        <div class="form-actions">
+          <button id="voucherBatchSubmitButton" type="submit">Tạo voucher</button>
+          <button class="secondary" id="voucherBatchCancelButton" type="button">Hủy</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="promotionDialog">
+      <form id="promotionForm" class="dialog-panel">
+        <div class="panel-title">
+          <h2>Thêm khuyến mãi</h2>
+          <span id="promotionFormStatus"></span>
+        </div>
+        <div class="form-grid two-col">
+          <input name="id" type="hidden" />
+          <label class="required full">
+            <span>Tên chương trình</span>
+            <input name="tenChuongTrinh" required />
+          </label>
+          <label class="required">
+            <span>Loại giá trị</span>
+            <select name="loaiGiaTri" required>
+              <option value="fixed">Số tiền</option>
+              <option value="percent">Phần trăm</option>
+            </select>
+          </label>
+          <label class="required">
+            <span>Giá trị</span>
+            <input name="giaTri" class="money-input" inputmode="decimal" required />
+          </label>
+          <label>
+            <span>Ngày bắt đầu</span>
+            <input name="ngayBatDau" class="date-input" inputmode="numeric" placeholder="dd/MM/yyyy" />
+          </label>
+          <label>
+            <span>Ngày hết hạn</span>
+            <input name="ngayHetHan" class="date-input" inputmode="numeric" placeholder="dd/MM/yyyy" />
+          </label>
+          <label>
+            <span>Trạng thái</span>
+            <select name="trangThai">
+              <option>Đang áp dụng</option>
+              <option>Tạm ngưng</option>
+            </select>
+          </label>
+          <label class="full">
+            <span>Ghi chú</span>
+            <textarea name="ghiChu" rows="3"></textarea>
+          </label>
+        </div>
+        <div class="form-actions">
+          <button id="promotionSubmitButton" type="submit">Lưu khuyến mãi</button>
+          <button class="secondary" id="promotionCancelButton" type="button">Hủy</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="orderDialog">
+      <form id="orderForm" class="dialog-panel">
+        <div class="panel-title">
+          <h2>Tạo đơn hàng</h2>
+          <span id="orderFormStatus"></span>
+        </div>
+        <div class="tour-form-sections">
+          <fieldset class="form-section">
+            <legend>Thông tin đơn hàng</legend>
+            <div class="form-grid two-col">
+              <label class="required order-type-field full">
+                <span>Loại hợp đồng</span>
+                <div class="segmented">
+                  <label><input name="loaiHopDong" type="radio" value="xe_nguyen_chuyen" checked /> Xe nguyên chuyến</label>
+                  <label><input name="loaiHopDong" type="radio" value="xe_ghep" /> Xe ghép</label>
+                </div>
+              </label>
+              <label class="required customer-main-field customer-lookup-field">
+                <span>Số điện thoại khách</span>
+                <input name="soDienThoai" id="orderCustomerPhone" inputmode="numeric" autocomplete="tel" maxlength="14" placeholder="Nhập SĐT 10 chữ số" required />
+                <input name="khachHangId" id="orderCustomerId" type="hidden" />
+              </label>
+              <label class="required customer-main-field customer-new-field">
+                <span>Tên khách hàng</span>
+                <input name="tenKhach" id="orderCustomerName" required />
+              </label>
+              <label class="customer-main-field customer-new-field">
+                <span>Số CCCD</span>
+                <input name="soCCCD" id="orderCustomerCccd" inputmode="numeric" />
+              </label>
+              <label class="customer-main-field customer-new-field">
+                <span>Địa chỉ</span>
+                <input name="diaChi" id="orderCustomerAddress" />
+              </label>
+              <label class="required customer-main-field customer-new-field">
+                <span>Loại khách</span>
+                <select name="loaiKhachHang" id="orderCustomerProfileType" required>
+                  <option value="">Chọn loại khách</option>
+                  <option>Khách cá nhân</option>
+                  <option>Khách doanh nghiệp</option>
+                </select>
+              </label>
+              <label class="customer-main-field customer-preview-field">
+                <span>Thông tin khách</span>
+                <div class="customer-preview" id="orderCustomerPreview">Nhập số điện thoại để kiểm tra khách hàng.</div>
+              </label>
+              <label class="customer-main-field customer-new-field">
+                <span>Năm sinh</span>
+                <input name="namSinh" id="orderCustomerBirthYear" inputmode="numeric" />
+              </label>
+              <label class="required customer-main-field customer-new-field">
+                <span>Giới tính</span>
+                <select name="gioiTinh" id="orderCustomerGender" required>
+                  <option value="">Chọn giới tính</option>
+                  <option>Nam</option>
+                  <option>Nữ</option>
+                  <option>Khác</option>
+                </select>
+              </label>
+              <label class="required customer-main-field customer-new-field">
+                <span>Nguồn khách</span>
+                <select name="nguonKhach" id="orderCustomerSource" required>
+                  <option value="">Chọn nguồn</option>
+                  <option>Facebook Ads</option>
+                  <option>Tổng đài</option>
+                  <option>Tiktok</option>
+                  <option>Lái xe giới thiệu</option>
+                  <option>Khách cũ</option>
+                  <option>Khác</option>
+                </select>
+              </label>
+              <label class="required customer-main-field customer-new-field">
+                <span>Nhân viên nhập</span>
+                <input name="nhanVienNhap" id="orderCustomerStaff" required readonly />
+              </label>
+            </div>
+          </fieldset>
+
+          <fieldset class="form-section journey-section">
+            <legend>Hành trình</legend>
+            <div class="form-grid two-col">
+              <label class="required full">
+                <span>Tour / tuyến</span>
+                <select name="hopDongTourId" id="orderContractSelect" required></select>
+              </label>
+              <label class="required full">
+                <span>Khu vực đặt xe</span>
+                <select name="khuVucDatXe" required>
+                  <option value="">Chọn khu vực</option>
+                  <option value="SÀI GÒN">SÀI GÒN</option>
+                  <option value="VŨNG TÀU">VŨNG TÀU</option>
+                  <option value="BIÊN HÒA">BIÊN HÒA</option>
+                  <option value="TỈNH KHÁC">TỈNH KHÁC</option>
+                </select>
+              </label>
+              <label class="required">
+                <span>Điểm đón</span>
+                <input name="diemDon" id="orderPickupInput" required />
+              </label>
+              <label class="required">
+                <span>Điểm trả</span>
+                <input name="diemTra" id="orderDropoffInput" required />
+              </label>
+              <label class="required full">
+                <span>Ngày giờ đi</span>
+                <input name="ngayGioDi" class="datetime-input" inputmode="numeric" placeholder="dd/MM/yyyy HH:mm" required />
+                <small class="field-help datetime-help">Nhập thời gian khởi hành dự kiến của đơn hàng.</small>
+              </label>
+              <label class="required full">
+                <span>Số chỗ</span>
+                <select name="soCho" required>
+                  <option value="">Chọn số chỗ</option>
+                  <option>4 chỗ</option>
+                  <option>5 chỗ</option>
+                  <option>7 chỗ</option>
+                  <option>9 chỗ</option>
+                  <option>16 chỗ</option>
+                  <option>29 chỗ</option>
+                  <option>45 chỗ</option>
+                  <option>Tải Van 945 KG</option>
+                </select>
+              </label>
+            </div>
+          </fieldset>
+
+          <fieldset class="form-section">
+            <legend>Tài chính</legend>
+            <div class="form-grid two-col">
+              <label class="required">
+                <span>Giá tiền / doanh thu</span>
+                <input name="giaTien" class="money-input" inputmode="numeric" required />
+              </label>
+              <label class="order-money-extra">
+                <span>Giảm giá</span>
+                <input name="giamGia" class="money-input" inputmode="numeric" value="0" />
+              </label>
+              <label class="order-money-extra" id="manualDiscountNoteWrap" hidden>
+                <span>Ghi chú giảm giá thủ công</span>
+                <input name="ghiChuGiamGia" />
+              </label>
+              <label class="order-money-extra">
+                <span>Phụ thu</span>
+                <input name="phuThu" class="money-input" inputmode="numeric" value="0" />
+              </label>
+              <label class="order-money-extra" id="surchargeReasonWrap" hidden>
+                <span>Lý do phụ thu</span>
+                <input name="lyDoPhuThu" />
+              </label>
+              <label class="order-money-extra">
+                <span>Khách đã cọc</span>
+                <input name="daCoc" class="money-input" inputmode="numeric" value="0" />
+              </label>
+              <label class="required customer-type-field">
+                <span>Loại khách</span>
+                <div class="segmented">
+                  <label><input name="loaiKhach" type="radio" value="B2C" checked /> B2C</label>
+                  <label><input name="loaiKhach" type="radio" value="B2B" /> B2B</label>
+                </div>
+              </label>
+              <label id="ticketCountWrap">
+                <span>Số vé xe ghép</span>
+                <input name="soVe" id="ticketCountInput" inputmode="numeric" min="0" value="0" />
+              </label>
+            </div>
+          </fieldset>
+
+          <fieldset class="form-section" id="orderBenefitsSection">
+            <legend>Voucher & khuyến mãi</legend>
+            <div class="form-grid two-col">
+              <div>
+                <span class="field-label">Voucher áp dụng</span>
+                <div class="benefit-picker" id="orderVoucherPicker"></div>
+              </div>
+              <div>
+                <span class="field-label">Chương trình khuyến mãi</span>
+                <div class="benefit-picker" id="orderPromotionPicker"></div>
+              </div>
+              <p class="note full" id="benefitPreview">Có thể chọn nhiều voucher và nhiều chương trình khuyến mãi.</p>
+            </div>
+          </fieldset>
+
+          <fieldset class="form-section" id="sharedPassengersSection">
+            <legend>Khách xe ghép</legend>
+            <div class="shared-passenger-list" id="sharedPassengerList"></div>
+          </fieldset>
+
+          <fieldset class="form-section" id="orderInvoiceSection">
+            <legend>Hóa đơn</legend>
+            <label class="checkbox-line">
+              <input name="yeuCauHoaDon" id="invoiceToggle" type="checkbox" />
+              <span>Khách yêu cầu xuất hóa đơn</span>
+            </label>
+            <div class="form-grid two-col invoice-fields" id="invoiceFields">
+              <label>
+                <span>Tên công ty</span>
+                <input name="tenCongTy" />
+              </label>
+              <label>
+                <span>Mã số thuế</span>
+                <input name="maSoThue" />
+              </label>
+              <label class="full">
+                <span>Địa chỉ hóa đơn</span>
+                <input name="diaChiHoaDon" />
+              </label>
+              <label>
+                <span>Email nhận hóa đơn</span>
+                <input name="emailHoaDon" type="email" />
+              </label>
+            </div>
+          </fieldset>
+
+          <fieldset class="form-section" id="orderDebtSection">
+            <legend>Công nợ</legend>
+            <label class="checkbox-line">
+              <input name="congNo" id="debtToggle" type="checkbox" />
+              <span>Ghi nhận công nợ cho đơn hàng</span>
+            </label>
+            <div class="form-grid two-col" id="debtFields" hidden>
+              <label>
+                <span>Đối tượng ghi nhận công nợ</span>
+                <input name="congNoChoAi" id="debtOwnerInput" placeholder="Nhập tên cá nhân hoặc đơn vị" />
+              </label>
+            </div>
+          </fieldset>
+
+          <fieldset class="form-section">
+            <legend>Ghi chú</legend>
+            <textarea name="ghiChu" rows="3"></textarea>
+          </fieldset>
+
+          <fieldset class="form-section payment-summary-section">
+            <legend>Tổng kết thanh toán</legend>
+            <div class="payment-summary" id="orderPaymentSummary"></div>
+          </fieldset>
+        </div>
+        <div class="form-actions">
+          <button id="orderSubmitButton" type="submit">Lưu đơn hàng</button>
+          <button class="secondary" id="orderCancelButton" type="button">Hủy</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="assignVehicleDialog">
+      <form id="assignVehicleForm" class="dialog-panel">
+        <div class="panel-title">
+          <h2>Điều xe cho đơn hàng</h2>
+          <span id="assignVehicleFormStatus"></span>
+        </div>
+        <input name="orderId" type="hidden" />
+        <div class="details-readonly" id="assignVehicleSummary"></div>
+        <fieldset class="form-section">
+          <legend>Thông tin điều xe</legend>
+          <div class="form-grid two-col">
+            <label class="required">
+              <span>Giờ đi</span>
+              <input name="ngayGioDi" class="datetime-input" inputmode="numeric" readonly required />
+              <small class="field-help datetime-help">Thời gian đã khai báo khi tạo đơn hàng.</small>
+            </label>
+            <label class="required">
+              <span>Ngày giờ đến dự kiến</span>
+              <input name="ngayGioDuKienKetThuc" class="datetime-input" inputmode="numeric" placeholder="dd/MM/yyyy HH:mm" required />
+              <small class="field-help datetime-help">Bắt buộc nhập đủ ngày và giờ. Ví dụ: 17/07/2026 17:00</small>
+            </label>
+            <label>
+              <span>Biển số xe</span>
+              <select name="bienKiemSoat" id="orderVehicleSelect"></select>
+              <small class="field-help">Có thể để trống nếu chưa tìm được xe phù hợp.</small>
+            </label>
+            <label>
+              <span>Lái xe</span>
+              <input id="orderDriverName" readonly />
+            </label>
+            <label>
+              <span>Loại xe</span>
+              <input id="orderVehicleType" readonly />
+            </label>
+            <label>
+              <span>Số chỗ</span>
+              <input id="orderVehicleSeats" readonly />
+            </label>
+            <label id="franchiseCommissionWrap">
+              <span>Tỷ lệ nộp lại theo đơn (%)</span>
+              <input name="tyLeNopLai" id="franchiseCommissionInput" inputmode="decimal" min="0" placeholder="Nhập tỷ lệ %" />
+            </label>
+          </div>
+          <p class="note" id="vehicleWarning"></p>
+        </fieldset>
+        <div class="form-actions">
+          <button id="assignVehicleSubmitButton" type="submit">Lưu điều xe</button>
+          <button class="secondary" id="assignVehicleCancelButton" type="button">Hủy</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="franchiseVehicleDialog">
+      <form id="franchiseVehicleForm" class="dialog-panel">
+        <div class="panel-title">
+          <h2>Thêm xe thương quyền</h2>
+          <span id="franchiseVehicleFormStatus"></span>
+        </div>
+        <div class="form-grid two-col">
+          <input name="id" type="hidden" />
+          <label class="required">
+            <span>Biển số xe</span>
+            <input name="bienKiemSoat" required pattern="\d{2}[A-Za-z]-\d{3}\.\d{2}" placeholder="68A-123.45" title="Nhập đúng định dạng 68A-123.45" />
+          </label>
+          <label class="required">
+            <span>Dòng xe</span>
+            <select name="dongXe" required>
+              <option value="">Chọn dòng xe</option>
+              <option>Xe điện</option>
+              <option>Xe xăng</option>
+              <option>Xe dầu</option>
+              <option>Xe hybrid</option>
+            </select>
+          </label>
+          <label class="required">
+            <span>Hiệu xe</span>
+            <select name="hieuXe" required>
+              <option value="">Chọn hiệu xe</option>
+            </select>
+          </label>
+          <label>
+            <span>Số chỗ</span>
+            <select name="soCho">
+              <option value="">Chọn số chỗ</option>
+              <option>4 chỗ</option>
+              <option>5 chỗ</option>
+              <option>7 chỗ</option>
+              <option>9 chỗ</option>
+              <option>16 chỗ</option>
+              <option>29 chỗ</option>
+              <option>45 chỗ</option>
+              <option>Tải Van 945 KG</option>
+            </select>
+          </label>
+          <label class="required">
+            <span>Chủ xe / đơn vị hợp tác</span>
+            <input name="tenChuXe" required />
+          </label>
+          <label>
+            <span>SĐT chủ xe</span>
+            <input name="soDienThoaiChuXe" inputmode="tel" />
+          </label>
+          <label class="required">
+            <span>Lái xe</span>
+            <input name="hoTenLaiXe" required />
+          </label>
+          <label>
+            <span>SĐT lái xe</span>
+            <input name="soDienThoaiLaiXe" inputmode="tel" />
+          </label>
+          <label class="full">
+            <span>Địa chỉ lái xe</span>
+            <input name="diaChiLaiXe" />
+          </label>
+          <label>
+            <span>Trạng thái</span>
+            <select name="trangThai">
+              <option>Đang hợp tác</option>
+              <option>Tạm ngưng</option>
+              <option>Ngừng hợp tác</option>
+            </select>
+          </label>
+          <label class="full">
+            <span>Ghi chú</span>
+            <textarea name="ghiChu" rows="3"></textarea>
+          </label>
+        </div>
+        <div class="form-actions">
+          <button id="franchiseVehicleSubmitButton" type="submit">Lưu xe</button>
+          <button class="secondary" id="franchiseVehicleCancelButton" type="button">Hủy</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="detailsDialog">
+      <form id="detailsForm" class="dialog-panel">
+        <div class="panel-title">
+          <h2 id="detailsTitle">Chi tiết</h2>
+          <span id="detailsStatus"></span>
+        </div>
+        <input name="id" type="hidden" />
+        <input name="type" type="hidden" />
+        <div class="details-readonly" id="detailsReadonly"></div>
+        <div class="details-editor" id="detailsEditor"></div>
+        <div class="form-actions">
+          <button id="detailsSaveButton" type="submit">Lưu thay đổi</button>
+          <button class="danger" id="detailsDeleteButton" type="button">Xóa</button>
+          <button class="secondary" id="detailsCloseButton" type="button">Đóng</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="invoiceGroupDialog">
+      <form id="invoiceGroupForm" class="dialog-panel">
+        <div class="panel-title">
+          <h2>Tạo hóa đơn gộp</h2>
+          <span id="invoiceGroupFormStatus"></span>
+        </div>
+        <p class="muted">Chọn ít nhất hai đơn nguyên chuyến đã hoàn thành của cùng một khách hàng.</p>
+        <input id="invoiceGroupSearch" class="search-input full" type="search" placeholder="Tìm theo mã đơn, họ tên hoặc số điện thoại khách..." />
+        <div class="table-wrap invoice-group-orders">
+          <table>
+            <thead><tr><th></th><th>Mã đơn</th><th>Khách hàng</th><th>Ngày đi</th><th>Chuyến đi</th><th>Tiền trước VAT</th></tr></thead>
+            <tbody id="invoiceGroupCandidateTable"></tbody>
+          </table>
+        </div>
+        <div class="form-grid two-col">
+          <label class="required"><span>Tên công ty</span><input name="tenCongTy" required /></label>
+          <label class="required"><span>Mã số thuế</span><input name="maSoThue" required /></label>
+          <label class="required full"><span>Địa chỉ hóa đơn</span><input name="diaChiHoaDon" required /></label>
+          <label class="full"><span>Email nhận hóa đơn</span><input name="emailHoaDon" type="email" /></label>
+        </div>
+        <section class="invoice-group-summary" id="invoiceGroupSummary"></section>
+        <div class="form-actions">
+          <button id="invoiceGroupSubmitButton" type="submit">Xác nhận xuất hóa đơn gộp</button>
+          <button class="secondary" id="invoiceGroupCancelButton" type="button">Hủy</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="completeDialog">
+      <form id="completeForm" class="dialog-panel">
+        <h2>Hoàn thành đơn hàng</h2>
+        <p id="completeOrderLabel"></p>
+        <div class="details-readonly" id="completeOrderSummary"></div>
+        <input name="orderId" type="hidden" />
+        <label class="required">
+          <span>Ngày giờ hoàn thành</span>
+          <input name="ngayGioHoanThanh" inputmode="numeric" placeholder="dd/MM/yyyy HH:mm" required />
+        </label>
+        <div class="form-actions">
+          <button id="completeSubmitButton" type="submit">Bấm hoàn thành</button>
+          <button class="secondary" id="completeCancelButton" type="button">Hủy</button>
+        </div>
+      </form>
+    </dialog>
+
+    <script src="/static/app.js?v=revenue-red-amount-20260821" type="module"></script>
+  </body>
+</html>
