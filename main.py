@@ -37,6 +37,7 @@ SHEET_ID = os.getenv("GOOGLE_SHEET_ID", "")
 LEGACY_SHEET_ID = os.getenv("LEGACY_GOOGLE_SHEET_ID", "")
 LEGACY_READ_ENABLED = os.getenv("LEGACY_READ_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"}
 SERVICE_ACCOUNT_FILE = os.getenv("GOOGLE_SERVICE_ACCOUNT_FILE", "service-account.json")
+SERVICE_ACCOUNT_JSON = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON", "")
 DEMO_PUBLIC_USERNAME = os.getenv("DEMO_PUBLIC_USERNAME", "demo")
 DEMO_PUBLIC_PASSWORD = os.getenv("DEMO_PUBLIC_PASSWORD", "")
 DEFAULT_ADMIN_USERNAME = os.getenv("DEFAULT_ADMIN_USERNAME", "admin")
@@ -1129,13 +1130,23 @@ def get_gspread_client() -> Any:
         return _GSPREAD_CLIENT
     if gspread is None:
         raise HTTPException(status_code=500, detail="Chưa cài thư viện gspread.")
-    path = credentials_path()
-    if not path.exists():
-        raise HTTPException(status_code=503, detail="Chưa cấu hình service-account.json.")
-    _GSPREAD_CLIENT = gspread.service_account(
-        filename=str(path),
-        http_client=gspread.BackOffHTTPClient,
-    )
+    if SERVICE_ACCOUNT_JSON:
+        try:
+            service_account_info = json.loads(SERVICE_ACCOUNT_JSON)
+        except json.JSONDecodeError as exc:
+            raise HTTPException(status_code=503, detail="Cấu hình Google service account không hợp lệ.") from exc
+        _GSPREAD_CLIENT = gspread.service_account_from_dict(
+            service_account_info,
+            http_client=gspread.BackOffHTTPClient,
+        )
+    else:
+        path = credentials_path()
+        if not path.exists():
+            raise HTTPException(status_code=503, detail="Chưa cấu hình Google service account.")
+        _GSPREAD_CLIENT = gspread.service_account(
+            filename=str(path),
+            http_client=gspread.BackOffHTTPClient,
+        )
     return _GSPREAD_CLIENT
 
 
