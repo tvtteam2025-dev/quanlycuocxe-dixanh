@@ -30,6 +30,11 @@ except ImportError:  # pragma: no cover
 
 load_dotenv()
 
+
+def _env_int(name: str, default: int) -> int:
+    value = os.getenv(name, "").strip()
+    return int(value) if value else default
+
 BASE_DIR = Path(__file__).resolve().parent
 PUBLIC_DIR = BASE_DIR / "public"
 
@@ -47,10 +52,10 @@ _SPREADSHEET: Any | None = None
 _LEGACY_SPREADSHEET: Any | None = None
 _WORKSHEET_CACHE: dict[str, Any] = {}
 _HEADER_CHECKED_SHEETS: set[str] = set()
-SHEET_VALUES_CACHE_TTL_SECONDS = max(30, int(os.getenv("SHEET_VALUES_CACHE_TTL_SECONDS", "300")))
+SHEET_VALUES_CACHE_TTL_SECONDS = max(30, _env_int("SHEET_VALUES_CACHE_TTL_SECONDS", 300))
 LEGACY_SHEET_VALUES_CACHE_TTL_SECONDS = max(
     300,
-    int(os.getenv("LEGACY_SHEET_VALUES_CACHE_TTL_SECONDS", "86400")),
+    _env_int("LEGACY_SHEET_VALUES_CACHE_TTL_SECONDS", 86400),
 )
 _SHEET_VALUES_CACHE: dict[str, dict[str, Any]] = {}
 _SHEET_VALUES_CACHE_LOCK = threading.RLock()
@@ -61,7 +66,7 @@ _LEGACY_VALUES_CACHE: dict[str, dict[str, Any]] = {}
 _LEGACY_VALUES_CACHE_LOCK = threading.RLock()
 _LEGACY_REFRESH_LOCKS: dict[str, threading.Lock] = {}
 SESSIONS: dict[str, dict[str, Any]] = {}
-SESSION_IDLE_TIMEOUT_SECONDS = max(300, int(os.getenv("SESSION_IDLE_TIMEOUT_SECONDS", str(8 * 60 * 60))))
+SESSION_IDLE_TIMEOUT_SECONDS = max(300, _env_int("SESSION_IDLE_TIMEOUT_SECONDS", 8 * 60 * 60))
 USER_CACHE_TTL_SECONDS = 30
 _USER_CACHE: dict[str, Any] = {"expires": datetime.min.replace(tzinfo=timezone.utc), "rows": []}
 
