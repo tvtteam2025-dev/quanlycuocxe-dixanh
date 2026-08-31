@@ -19,7 +19,7 @@ from urllib.request import Request as UrlRequest, urlopen
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse, Response
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -850,7 +850,12 @@ async def public_demo_auth(request: Request, call_next):
 
     return await call_next(request)
 
-app.mount("/static", StaticFiles(directory=PUBLIC_DIR), name="static")
+if PUBLIC_DIR.exists():
+    app.mount("/static", StaticFiles(directory=PUBLIC_DIR), name="static")
+else:
+    @app.get("/static/{asset_path:path}")
+    def vercel_static_asset(asset_path: str) -> RedirectResponse:
+        return RedirectResponse(url=f"/{asset_path}")
 
 
 class CustomerInput(BaseModel):
