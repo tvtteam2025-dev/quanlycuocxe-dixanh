@@ -40,7 +40,7 @@ PUBLIC_DIR = BASE_DIR / "public"
 
 SHEET_ID = os.getenv("GOOGLE_SHEET_ID", "")
 LEGACY_SHEET_ID = os.getenv("LEGACY_GOOGLE_SHEET_ID", "")
-LEGACY_READ_ENABLED = os.getenv("LEGACY_READ_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"}
+LEGACY_READ_ENABLED = os.getenv("LEGACY_READ_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}
 SERVICE_ACCOUNT_FILE = os.getenv("GOOGLE_SERVICE_ACCOUNT_FILE", "service-account.json")
 SERVICE_ACCOUNT_JSON = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON", "")
 DEMO_PUBLIC_USERNAME = os.getenv("DEMO_PUBLIC_USERNAME", "demo")
@@ -361,6 +361,9 @@ SHARED_RIDE_HEADERS = [
     "phuThu",
     "lyDoPhuThu",
     "loaiKhach",
+    "trangThai",
+    "deletedAt",
+    "deletedBy",
 ]
 
 VOUCHER_HEADERS = [
@@ -405,6 +408,9 @@ ORDER_BENEFIT_HEADERS = [
     "giaTri",
     "soTienGiam",
     "createdAt",
+    "trangThai",
+    "deletedAt",
+    "deletedBy",
 ]
 
 USER_HEADERS = [
@@ -443,7 +449,10 @@ CSKH_SHIFT_REPORT_HEADERS = [
     "Nhân Viên Xóa",
 ]
 
-CALENDAR_VEHICLE_ORDER_HEADERS = ["bienKiemSoat", "thuTu", "updatedAt", "updatedBy"]
+CALENDAR_VEHICLE_ORDER_HEADERS = [
+    "bienKiemSoat", "thuTu", "updatedAt", "updatedBy",
+    "trangThai", "deletedAt", "deletedBy",
+]
 CONTRACT_PRICING_HEADERS = ["id", "configJson", "updatedAt", "updatedBy"]
 
 DEFAULT_CONTRACT_PRICING = {
@@ -1236,6 +1245,20 @@ def merge_records_by_id(current: list[dict[str, Any]], archived: list[dict[str, 
     return current + [row for row in archived if not str(row.get("id") or "").strip() or str(row.get("id") or "").strip() not in seen]
 
 
+def deduplicate_records_by_id(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Giữ bản ghi nằm sau cùng (bản mới nhất) khi một ID bị lặp trong sheet."""
+    seen: set[str] = set()
+    result: list[dict[str, Any]] = []
+    for row in reversed(records):
+        record_id = str(row.get("id") or "").strip()
+        if record_id and record_id in seen:
+            continue
+        if record_id:
+            seen.add(record_id)
+        result.append(row)
+    return list(reversed(result))
+
+
 def get_worksheet(sheet_name: str, headers: list[str]) -> Any:
     spreadsheet = get_spreadsheet()
     worksheet = _WORKSHEET_CACHE.get(sheet_name)
@@ -1363,6 +1386,28 @@ def soft_delete_row(worksheet: Any, row_number: int, headers: list[str], row: di
     return deleted
 
 
+def soft_delete_matching_rows(
+    worksheet: Any,
+    headers: list[str],
+    predicate: Any,
+    deleted_by: str,
+) -> int:
+    """Mark matching rows as deleted while preserving their Google Sheet history."""
+    values = worksheet_values(worksheet, force_refresh=True)
+    deleted_count = 0
+    for row_number, values_row in enumerate(values[1:], start=2):
+        padded = values_row + [""] * max(len(headers) - len(values_row), 0)
+        row = {header: padded[index] for index, header in enumerate(headers)}
+        if is_deleted_row(row) or not predicate(row):
+            continue
+        row["trangThai"] = "Đã xóa"
+        row["deletedAt"] = now_iso()
+        row["deletedBy"] = deleted_by
+        update_row_by_headers(worksheet, row_number, headers, row)
+        deleted_count += 1
+    return deleted_count
+
+
 def customers_worksheet() -> Any:
     return get_worksheet(CUSTOMERS_SHEET_NAME, CUSTOMER_HEADERS)
 
@@ -1488,8 +1533,9 @@ def shared_ride_worksheet() -> Any:
 
 
 def all_order_records() -> list[dict[str, Any]]:
-    current = worksheet_records(orders_worksheet(), ORDER_HEADERS)
-    records = merge_records_by_id(current, legacy_worksheet_records(ORDERS_SHEET_NAME, ORDER_HEADERS))
+    # Google Sheet chính là nguồn dữ liệu duy nhất. Không ghép dữ liệu lưu trữ
+    # vì một ID ở hai nguồn sẽ hiển thị thành hai chuyến sau khi chỉnh sửa.
+    records = deduplicate_records_by_id(worksheet_records(orders_worksheet(), ORDER_HEADERS))
     customers_by_id = {
         str(customer.get("id") or "").strip(): customer
         for customer in customer_records()
@@ -1507,8 +1553,7 @@ def all_order_records() -> list[dict[str, Any]]:
 
 
 def all_shared_ride_records() -> list[dict[str, Any]]:
-    current = worksheet_records(shared_ride_worksheet(), SHARED_RIDE_HEADERS)
-    return merge_records_by_id(current, legacy_worksheet_records(SHARED_RIDE_SHEET_NAME, SHARED_RIDE_HEADERS))
+    return deduplicate_records_by_id(worksheet_records(shared_ride_worksheet(), SHARED_RIDE_HEADERS))
 
 
 def sync_customer_profile_to_current_orders(customer_id: str, before: dict[str, Any], after: dict[str, Any]) -> int:
@@ -1548,8 +1593,7 @@ def sync_customer_profile_to_current_orders(customer_id: str, before: dict[str, 
 
 
 def all_system_log_records() -> list[dict[str, Any]]:
-    current = worksheet_records(system_logs_worksheet(), SYSTEM_LOG_HEADERS)
-    return merge_records_by_id(current, legacy_worksheet_records(SYSTEM_LOGS_SHEET_NAME, SYSTEM_LOG_HEADERS))
+    return deduplicate_records_by_id(worksheet_records(system_logs_worksheet(), SYSTEM_LOG_HEADERS))
 
 
 def vouchers_worksheet() -> Any:
@@ -1915,18 +1959,14 @@ def order_benefit_records() -> list[dict[str, Any]]:
     return worksheet_records(order_benefits_worksheet(), ORDER_BENEFIT_HEADERS)
 
 
-def replace_order_benefits(order_id: str, rows: list[list[Any]]) -> None:
+def replace_order_benefits(order_id: str, rows: list[list[Any]], deleted_by: str = "system") -> None:
     worksheet = order_benefits_worksheet()
-    values = worksheet_values(worksheet)
-    order_id_column = ORDER_BENEFIT_HEADERS.index("donHangId")
-    end_column = re.sub(r"\d+$", "", gspread.utils.rowcol_to_a1(1, len(ORDER_BENEFIT_HEADERS)))
-    ranges = [
-        f"A{row_number}:{end_column}{row_number}"
-        for row_number, row in enumerate(values[1:], start=2)
-        if len(row) > order_id_column and str(row[order_id_column] or "") == str(order_id)
-    ]
-    for start in range(0, len(ranges), 200):
-        worksheet.batch_clear(ranges[start : start + 200])
+    soft_delete_matching_rows(
+        worksheet,
+        ORDER_BENEFIT_HEADERS,
+        lambda row: str(row.get("donHangId") or "") == str(order_id),
+        deleted_by,
+    )
     if rows:
         append_worksheet_rows(worksheet, rows)
     invalidate_worksheet_cache(worksheet)
@@ -2226,36 +2266,12 @@ def customer_records() -> list[dict[str, Any]]:
             row["createdAt"] = source
             row["nguonKhach"] = ""
             row["nhanVienNhap"] = ""
-    # Một số khách dữ liệu cũ từng bị copy-on-write nhiều lần khi cache sheet
-    # chưa kịp làm mới. Giữ bản nằm sau cùng (bản sửa mới nhất) cho mỗi ID.
-    seen_customer_ids: set[str] = set()
-    deduplicated_records: list[dict[str, Any]] = []
-    for row in reversed(records):
-        customer_id = str(row.get("id") or "").strip()
-        if customer_id and customer_id in seen_customer_ids:
-            continue
-        if customer_id:
-            seen_customer_ids.add(customer_id)
-        deduplicated_records.append(row)
-    records = list(reversed(deduplicated_records))
-    id_column = actual_headers.index("id") if "id" in actual_headers else 0
-    # Kể cả dòng hiện hành đã xóa cũng phải chặn bản cùng ID trong kho dữ liệu
-    # cũ; nếu chỉ xét records (đã lọc deletedAt), khách cũ sẽ xuất hiện trở lại.
-    current_ids = {
-        str(row[id_column]).strip()
-        for row in values[1:]
-        if id_column < len(row) and str(row[id_column]).strip()
-    }
-    archived = legacy_worksheet_records(CUSTOMERS_SHEET_NAME, CUSTOMER_HEADERS)
-    combined = records + [
-        row for row in archived
-        if not str(row.get("id") or "").strip() or str(row.get("id") or "").strip() not in current_ids
-    ]
-    for row in combined:
+    records = deduplicate_records_by_id(records)
+    for row in records:
         normalized_phone = normalize_phone(row.get("soDienThoai"))
         if normalized_phone:
             row["soDienThoai"] = normalized_phone
-    return combined
+    return records
 
 
 def find_customer_by_phone(rows: list[dict[str, Any]], phone: str) -> dict[str, Any] | None:
@@ -2904,10 +2920,12 @@ def update_calendar_vehicle_order(payload: CalendarVehicleOrderInput, request: R
             plates.append(plate)
             seen.add(key)
     worksheet = calendar_vehicle_order_worksheet()
-    existing = worksheet_values(worksheet)
-    if len(existing) > 1:
-        worksheet.batch_clear([f"A2:D{len(existing)}"])
-        invalidate_worksheet_cache(worksheet)
+    soft_delete_matching_rows(
+        worksheet,
+        CALENDAR_VEHICLE_ORDER_HEADERS,
+        lambda row: True,
+        str(user.get("username") or ""),
+    )
     now = now_iso()
     append_worksheet_rows(
         worksheet,
@@ -2923,10 +2941,12 @@ def reset_calendar_vehicle_order(request: Request) -> dict[str, Any]:
     if "calendar" not in user_permissions(str(user.get("role") or ""), user.get("extraPermissions")).get("views", []):
         raise HTTPException(status_code=403, detail="Tài khoản không có quyền xem lịch điều xe.")
     worksheet = calendar_vehicle_order_worksheet()
-    existing = worksheet_values(worksheet)
-    if len(existing) > 1:
-        worksheet.batch_clear([f"A2:D{len(existing)}"])
-        invalidate_worksheet_cache(worksheet)
+    soft_delete_matching_rows(
+        worksheet,
+        CALENDAR_VEHICLE_ORDER_HEADERS,
+        lambda row: True,
+        str(user.get("username") or ""),
+    )
     log_action(request, "reset_calendar_vehicle_order", "calendar", "vehicle_order", note="Khôi phục thứ tự mặc định của lịch điều xe")
     return {"ok": True, "bienKiemSoat": []}
 
@@ -7813,21 +7833,16 @@ def update_shared_order(
     for duplicate_row_number in duplicate_row_numbers or []:
         soft_delete_row(worksheet, duplicate_row_number, ORDER_HEADERS, order, request)
     shared_worksheet = shared_ride_worksheet()
-    values = worksheet_values(shared_worksheet)
-    order_column = SHARED_RIDE_HEADERS.index("donHangId")
-    end_column = re.sub(r"\d+$", "", gspread.utils.rowcol_to_a1(1, len(SHARED_RIDE_HEADERS)))
-    ranges = [
-        f"A{number}:{end_column}{number}" for number, row in enumerate(values[1:], start=2)
-        if len(row) > order_column and str(row[order_column] or "") == str(order_id)
-    ]
-    for start in range(0, len(ranges), 200):
-        shared_worksheet.batch_clear(ranges[start:start + 200])
-    if ranges:
-        invalidate_worksheet_cache(shared_worksheet)
+    soft_delete_matching_rows(
+        shared_worksheet,
+        SHARED_RIDE_HEADERS,
+        lambda row: str(row.get("donHangId") or "") == str(order_id),
+        current_user_display_name(request),
+    )
     append_worksheet_rows(shared_worksheet, shared_rows)
     if new_customer_rows:
         append_worksheet_rows(customers_worksheet(), new_customer_rows)
-    replace_order_benefits(order_id, benefit_rows)
+    replace_order_benefits(order_id, benefit_rows, current_user_display_name(request))
     log_action(request, "update_order", "order", order_id, before=before, after=order)
     return {"ok": True, "id": order_id}
 
@@ -7836,12 +7851,13 @@ def update_shared_order(
 def update_order(order_id: str, payload: OrderInput, request: Request) -> dict[str, Any]:
     worksheet = orders_worksheet()
     row_numbers = find_rows_by_id(worksheet, order_id, force_refresh=True)
-    row_number = row_numbers[0] if row_numbers else None
+    # Bản nằm sau cùng là bản cập nhật mới nhất và cũng là bản API hiển thị.
+    row_number = row_numbers[-1] if row_numbers else None
     if row_number is None:
         raise HTTPException(status_code=404, detail="Không tìm thấy đơn hàng.")
 
     orders = worksheet_records(worksheet, ORDER_HEADERS)
-    order = row_by_id(orders, order_id)
+    order = next((row for row in reversed(orders) if str(row.get("id") or "").strip() == order_id), None)
     if order is None:
         raise HTTPException(status_code=404, detail="Không tìm thấy đơn hàng.")
     if order_is_done(order):
@@ -7858,7 +7874,7 @@ def update_order(order_id: str, payload: OrderInput, request: Request) -> dict[s
             worksheet,
             row_number,
             order,
-            duplicate_row_numbers=row_numbers[1:],
+            duplicate_row_numbers=row_numbers[:-1],
         )
 
     tours = tour_records()
@@ -7979,9 +7995,9 @@ def update_order(order_id: str, payload: OrderInput, request: Request) -> dict[s
         order["ngayThuHoaHong"] = ""
         order["nguoiThuHoaHong"] = ""
     update_row_by_headers(worksheet, row_number, ORDER_HEADERS, order)
-    for duplicate_row_number in row_numbers[1:]:
+    for duplicate_row_number in row_numbers[:-1]:
         soft_delete_row(worksheet, duplicate_row_number, ORDER_HEADERS, order, request)
-    replace_order_benefits(order_id, benefit_rows)
+    replace_order_benefits(order_id, benefit_rows, current_user_display_name(request))
     log_action(request, "update_order", "order", order_id, before=before, after=order)
     return {"ok": True, "id": order_id}
 
@@ -8001,20 +8017,14 @@ def delete_order(order_id: str, request: Request) -> dict[str, Any]:
     deleted = dict(order)
     for row_number in row_numbers:
         deleted = soft_delete_row(worksheet, row_number, ORDER_HEADERS, order, request)
-    replace_order_benefits(order_id, [])
+    replace_order_benefits(order_id, [], current_user_display_name(request))
     shared_worksheet = shared_ride_worksheet()
-    shared_values = worksheet_values(shared_worksheet)
-    order_id_column = SHARED_RIDE_HEADERS.index("donHangId")
-    end_column = re.sub(r"\d+$", "", gspread.utils.rowcol_to_a1(1, len(SHARED_RIDE_HEADERS)))
-    shared_ranges = [
-        f"A{shared_row_number}:{end_column}{shared_row_number}"
-        for shared_row_number, shared_row in enumerate(shared_values[1:], start=2)
-        if len(shared_row) > order_id_column and str(shared_row[order_id_column] or "") == str(order_id)
-    ]
-    for start in range(0, len(shared_ranges), 200):
-        shared_worksheet.batch_clear(shared_ranges[start : start + 200])
-    if shared_ranges:
-        invalidate_worksheet_cache(shared_worksheet)
+    soft_delete_matching_rows(
+        shared_worksheet,
+        SHARED_RIDE_HEADERS,
+        lambda row: str(row.get("donHangId") or "") == str(order_id),
+        current_user_display_name(request),
+    )
     log_action(request, "delete_order", "order", order_id, before=order, after=deleted)
     return {"ok": True, "id": order_id}
 
@@ -8238,3 +8248,4 @@ def update_order_remittance_status(
         "ngayXacNhanNopTien": order["ngayXacNhanNopTien"],
         "nguoiXacNhanNopTien": order["nguoiXacNhanNopTien"],
     }
+
