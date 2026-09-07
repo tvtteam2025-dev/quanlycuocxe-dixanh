@@ -455,6 +455,12 @@ CALENDAR_VEHICLE_ORDER_HEADERS = [
 ]
 CONTRACT_PRICING_HEADERS = ["id", "configJson", "updatedAt", "updatedBy"]
 
+NUMERIC_SHEET_HEADERS = {
+    "giaTien", "giamGia", "daCoc", "thucThu", "tongUuDai", "thueVAT",
+    "tongThanhToan", "phuThu", "soTienNopLai", "tyLeNopLai", "soTien",
+    "giaTri", "soTienGiam", "soVe", "thuTu", "diemDanhGia", "namSinh",
+}
+
 DEFAULT_CONTRACT_PRICING = {
     "oneWay": [
         {"minKm": 1, "maxKm": 20, "rates": {"4": 18000, "7": 20000, "16": 20000}},
@@ -2126,8 +2132,23 @@ def find_rows_by_id(worksheet: Any, row_id: str, force_refresh: bool = False) ->
     ]
 
 
+def sheet_storage_value(header: str, value: Any) -> Any:
+    """Keep identifiers as text, but send known numeric fields as JSON numbers."""
+    if header not in NUMERIC_SHEET_HEADERS or value in (None, ""):
+        return "" if value is None else value
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value
+    text = str(value).strip().lstrip("'").strip()
+    if not re.fullmatch(r"[-+]?\d[\d\s.,]*%?", text):
+        return value
+    number = money_value(text)
+    return int(number) if number.is_integer() else number
+
+
 def update_row_by_headers(worksheet: Any, row_number: int, headers: list[str], row: dict[str, Any]) -> None:
-    values = [[row.get(header, "") for header in headers]]
+    values = [[sheet_storage_value(header, row.get(header, "")) for header in headers]]
     end_col = gspread.utils.rowcol_to_a1(row_number, len(headers)).replace(str(row_number), "")
     worksheet.update(f"A{row_number}:{end_col}{row_number}", values, value_input_option="RAW")
     invalidate_worksheet_cache(worksheet)
@@ -2155,13 +2176,33 @@ def append_worksheet_rows(worksheet: Any, rows: list[list[Any]]) -> None:
         if required_rows > worksheet.row_count:
             worksheet.add_rows(required_rows - worksheet.row_count)
         width = max(len(row) for row in rows)
-        normalized_rows = [list(row) + [""] * (width - len(row)) for row in rows]
+        sheet_headers = existing_values[0] if existing_values else []
+        normalized_rows = [
+            [
+                sheet_storage_value(sheet_headers[index] if index < len(sheet_headers) else "", value)
+                for index, value in enumerate(list(row) + [""] * (width - len(row)))
+            ]
+            for row in rows
+        ]
         end_column = re.sub(r"\d+$", "", gspread.utils.rowcol_to_a1(1, width))
-        worksheet.update(
-            f"A{start_row}:{end_column}{required_rows}",
-            normalized_rows,
-            value_input_option="RAW",
-        )
+        target_range = f"A{start_row}:{end_column}{required_rows}"
+        try:
+            worksheet.update(
+                target_range,
+                normalized_rows,
+                value_input_option="RAW",
+            )
+        except gspread.exceptions.APIError as exc:
+            # A worksheet object may keep an old row_count after rows are deleted
+            # manually in Google Sheets. Expand the real grid and retry once.
+            if "exceeds grid limits" not in str(exc).lower():
+                raise
+            worksheet.resize(rows=max(required_rows + 100, worksheet.row_count + 100))
+            worksheet.update(
+                target_range,
+                normalized_rows,
+                value_input_option="RAW",
+            )
         invalidate_worksheet_cache(worksheet)
 
 
@@ -7490,7 +7531,7 @@ def create_order(request: Request, payload: OrderInput) -> dict[str, Any]:
         vat_amount = round(revenue_amount * 0.08) if payload.yeuCauHoaDon else 0
         total_payment = revenue_amount + vat_amount
         deposit_amount = min(payload.daCoc, total_payment)
-        net_amount = max(total_payment - deposit_amount, 0)
+        net_amount = 0 if payload.congNo else max(total_payment - deposit_amount, 0)
         order_pickup = payload.diemDon
         order_dropoff = payload.diemTra
         invoice_label = "Có" if payload.yeuCauHoaDon else "Không"
@@ -7936,7 +7977,7 @@ def update_order(order_id: str, payload: OrderInput, request: Request) -> dict[s
     vat_amount = round(revenue_amount * 0.08) if payload.yeuCauHoaDon else 0
     total_payment = revenue_amount + vat_amount
     deposit_amount = min(payload.daCoc, total_payment)
-    net_amount = max(total_payment - deposit_amount, 0)
+    net_amount = 0 if payload.congNo else max(total_payment - deposit_amount, 0)
     commission_rate = money_value(order.get("tyLeNopLai"))
     updated_commission_amount = round_up_ten_thousand(revenue_amount * commission_rate / 100)
     was_debt = normalize_text(order.get("congNo")) in {"co", "yes", "true", "1"}
