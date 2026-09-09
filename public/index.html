@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Đi Xanh - Quản lý đơn hàng</title>
-    <link rel="stylesheet" href="/static/styles.css?v=revenue-red-amount-20260821" />
+    <link rel="stylesheet" href="/static/styles.css?v=notifications-20260908" />
   </head>
   <body>
     <section id="loginScreen" class="login-screen">
@@ -91,11 +91,50 @@
             <h1 id="pageTitle">Tổng quan</h1>
             <p id="pageHint">Theo dõi khách hàng, hợp đồng/tuyến và đơn hàng điều xe.</p>
           </div>
-          <div class="sync-box">
-            <span id="syncStatus">Đang tải dữ liệu...</span>
-            <button id="refreshButton" type="button">Tải lại</button>
+          <div class="topbar-actions">
+            <div class="notification-center" id="notificationCenter">
+              <button
+                class="notification-bell"
+                id="notificationBell"
+                type="button"
+                aria-label="Mở thông báo"
+                aria-expanded="false"
+                aria-controls="notificationPanel"
+                title="Thông báo"
+              >
+                <svg aria-hidden="true" viewBox="0 0 24 24" width="21" height="21" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M10.268 21a2 2 0 0 0 3.464 0" />
+                  <path d="M3.262 15.326A1 1 0 0 0 4 17h16a1 1 0 0 0 .74-1.673C19.41 13.956 18 12.499 18 8A6 6 0 0 0 6 8c0 4.499-1.411 5.956-2.738 7.326" />
+                </svg>
+                <span class="notification-badge" id="notificationBadge" hidden>0</span>
+              </button>
+              <section class="notification-panel" id="notificationPanel" aria-label="Danh sách thông báo" hidden>
+                <div class="notification-panel-header">
+                  <div>
+                    <h2>Thông báo</h2>
+                    <p id="notificationSummary">Không có thông báo chưa đọc</p>
+                  </div>
+                  <button class="notification-read-all" id="notificationReadAll" type="button">Đọc tất cả</button>
+                </div>
+                <div class="notification-filters" role="group" aria-label="Lọc thông báo">
+                  <button class="active" data-notification-filter="all" type="button">Tất cả</button>
+                  <button data-notification-filter="unread" type="button">Chưa đọc</button>
+                </div>
+                <div class="notification-list" id="notificationList">
+                  <p class="notification-empty">Đang tải thông báo...</p>
+                </div>
+              </section>
+            </div>
+            <div class="sync-box">
+              <span id="syncStatus">Đang tải dữ liệu...</span>
+              <button id="refreshButton" type="button">Tải lại</button>
+            </div>
           </div>
         </header>
+        <div class="notification-toast" id="notificationToast" role="status" aria-live="polite" hidden>
+          <strong id="notificationToastTitle"></strong>
+          <span id="notificationToastMessage"></span>
+        </div>
 
         <section id="dashboardView" class="view active">
           <div class="dashboard-hero">
@@ -1659,6 +1698,6 @@
       </form>
     </dialog>
 
-    <script src="/static/app.js?v=revenue-red-amount-20260821" type="module"></script>
+    <script src="/static/app.js?v=notifications-20260908" type="module"></script>
   </body>
 </html>

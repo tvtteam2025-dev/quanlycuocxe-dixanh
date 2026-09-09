@@ -3,6 +3,12 @@ const state = {
   currentUser: null,
   permissions: { views: [], actions: [] },
   roles: {},
+  notifications: [],
+  notificationFilter: "all",
+  unreadNotificationCount: 0,
+  notificationsInitialized: false,
+  notificationPollingId: null,
+  notificationToastTimer: null,
   users: [],
   reopenRequests: [],
   systemLogs: [],
@@ -64,6 +70,7 @@ const state = {
 
 const APP_VERSION_STORAGE_KEY = "diXanhAppVersion";
 const APP_VERSION_CHECK_INTERVAL_MS = 60 * 1000;
+const NOTIFICATION_POLL_INTERVAL_MS = 10 * 1000;
 
 const pageMeta = {
   dashboard: ["Tổng quan", "Theo dõi khách hàng, hợp đồng/tuyến và đơn hàng điều xe."],
@@ -260,6 +267,16 @@ const els = {
   pageHint: document.querySelector("#pageHint"),
   syncStatus: document.querySelector("#syncStatus"),
   refreshButton: document.querySelector("#refreshButton"),
+  notificationCenter: document.querySelector("#notificationCenter"),
+  notificationBell: document.querySelector("#notificationBell"),
+  notificationBadge: document.querySelector("#notificationBadge"),
+  notificationPanel: document.querySelector("#notificationPanel"),
+  notificationSummary: document.querySelector("#notificationSummary"),
+  notificationReadAll: document.querySelector("#notificationReadAll"),
+  notificationList: document.querySelector("#notificationList"),
+  notificationToast: document.querySelector("#notificationToast"),
+  notificationToastTitle: document.querySelector("#notificationToastTitle"),
+  notificationToastMessage: document.querySelector("#notificationToastMessage"),
   customerCount: document.querySelector("#customerCount"),
   contractCount: document.querySelector("#contractCount"),
   openOrderCount: document.querySelector("#openOrderCount"),
@@ -540,8 +557,14 @@ function roleLabel(role) {
 }
 
 function showLogin(message = "") {
+  stopNotificationPolling();
   state.currentUser = null;
   state.permissions = { views: [], actions: [] };
+  state.notifications = [];
+  state.unreadNotificationCount = 0;
+  state.notificationsInitialized = false;
+  if (els.notificationPanel) els.notificationPanel.hidden = true;
+  if (els.notificationBell) els.notificationBell.setAttribute("aria-expanded", "false");
   if (els.appShell) els.appShell.hidden = true;
   if (els.loginScreen) els.loginScreen.hidden = false;
   if (els.loginStatus) els.loginStatus.textContent = message;
@@ -556,6 +579,7 @@ function showApp() {
     els.currentUserLabel.textContent = role ? `${name} - ${role}` : name;
   }
   syncCskhShiftForm();
+  startNotificationPolling();
 }
 
 function clearAuth(message = "Vui lòng đăng nhập lại.") {
@@ -1294,6 +1318,205 @@ async function fetchJson(url, options = {}, timeoutMs = 30000) {
     }
   }
   throw lastError || new Error("Không thể tải dữ liệu.");
+}
+
+
+function notificationTimeLabel(value) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "Không rõ thời gian";
+  const seconds = Math.max(0, Math.floor((Date.now() - date.getTime()) / 1000));
+  if (seconds < 45) return "Vừa xong";
+  if (seconds < 3600) return `${Math.floor(seconds / 60)} phút trước`;
+  if (seconds < 86400) return `${Math.floor(seconds / 3600)} giờ trước`;
+  return new Intl.DateTimeFormat("vi-VN", {
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(date);
+}
+
+function notificationTypeLabel(notification) {
+  if (notification.entityType === "order") return "ĐH";
+  if (notification.entityType === "contract") return "HĐ";
+  if (notification.entityType === "tour") return "TR";
+  return "TB";
+}
+
+function renderNotifications() {
+  if (!els.notificationList) return;
+  const unreadCount = state.unreadNotificationCount;
+  if (els.notificationBadge) {
+    els.notificationBadge.hidden = unreadCount === 0;
+    els.notificationBadge.textContent = unreadCount > 99 ? "99+" : String(unreadCount);
+  }
+  if (els.notificationBell) {
+    els.notificationBell.classList.toggle("has-unread", unreadCount > 0);
+    els.notificationBell.setAttribute(
+      "aria-label",
+      unreadCount ? `Mở thông báo, ${unreadCount} tin chưa đọc` : "Mở thông báo",
+    );
+  }
+  if (els.notificationSummary) {
+    els.notificationSummary.textContent = unreadCount
+      ? `${unreadCount} thông báo chưa đọc`
+      : "Không có thông báo chưa đọc";
+  }
+  if (els.notificationReadAll) els.notificationReadAll.disabled = unreadCount === 0;
+
+  document.querySelectorAll("[data-notification-filter]").forEach((button) => {
+    button.classList.toggle("active", button.dataset.notificationFilter === state.notificationFilter);
+  });
+  const rows = state.notificationFilter === "unread"
+    ? state.notifications.filter((notification) => !notification.isRead)
+    : state.notifications;
+  els.notificationList.innerHTML = rows.length
+    ? rows.map((notification) => `
+        <article class="notification-item${notification.isRead ? " is-read" : " is-unread"}" data-notification-id="${escapeHtml(notification.id)}">
+          <span class="notification-type notification-type-${escapeHtml(notification.entityType || "external")}">${escapeHtml(notificationTypeLabel(notification))}</span>
+          <div class="notification-main" data-action="open-notification" role="button" tabindex="0">
+            <div class="notification-title-row">
+              <strong>${escapeHtml(notification.title)}</strong>
+              <time datetime="${escapeHtml(notification.createdAt)}">${escapeHtml(notificationTimeLabel(notification.createdAt))}</time>
+            </div>
+            <p>${escapeHtml(notification.message)}</p>
+            <div class="notification-meta">
+              <span>${escapeHtml(notification.sourceApp || "Hệ thống ngoài")}</span>
+              ${notification.entityId ? `<span>Mã: ${escapeHtml(notification.entityId)}</span>` : ""}
+            </div>
+          </div>
+          <button
+            class="notification-status-action"
+            data-action="toggle-notification-read"
+            type="button"
+            title="${notification.isRead ? "Đánh dấu chưa đọc" : "Đánh dấu đã đọc"}"
+          >${notification.isRead ? "Chưa đọc" : "Đã đọc"}</button>
+        </article>
+      `).join("")
+    : `<div class="notification-empty">
+        <strong>${state.notificationFilter === "unread" ? "Đã đọc hết thông báo" : "Chưa có thông báo"}</strong>
+        <span>Thông báo từ hệ thống khác sẽ xuất hiện tại đây.</span>
+      </div>`;
+}
+
+function showNotificationToast(notification) {
+  if (!els.notificationToast) return;
+  window.clearTimeout(state.notificationToastTimer);
+  els.notificationToastTitle.textContent = notification.title || "Có thông báo mới";
+  els.notificationToastMessage.textContent = notification.message || "Hệ thống vừa nhận được một cập nhật mới.";
+  els.notificationToast.hidden = false;
+  state.notificationToastTimer = window.setTimeout(() => {
+    els.notificationToast.hidden = true;
+  }, 6500);
+}
+
+async function loadNotifications({ announce = false } = {}) {
+  if (!state.currentUser) return;
+  try {
+    const result = await fetchJson("/api/notifications?limit=50", {}, 15000);
+    const previousIds = new Set(state.notifications.map((notification) => notification.id));
+    const nextRows = result.rows || [];
+    const newest = state.notificationsInitialized && announce
+      ? nextRows.find((notification) => !notification.isRead && !previousIds.has(notification.id))
+      : null;
+    state.notifications = nextRows;
+    state.unreadNotificationCount = Number(result.unreadCount || 0);
+    state.notificationsInitialized = true;
+    renderNotifications();
+    if (newest) showNotificationToast(newest);
+  } catch (error) {
+    if (els.notificationPanel && !els.notificationPanel.hidden) {
+      els.notificationList.innerHTML = `<div class="notification-empty"><strong>Chưa tải được thông báo</strong><span>${escapeHtml(error.message || "Vui lòng thử lại.")}</span></div>`;
+    }
+  }
+}
+
+function stopNotificationPolling() {
+  if (state.notificationPollingId) window.clearInterval(state.notificationPollingId);
+  state.notificationPollingId = null;
+  state.notificationsInitialized = false;
+}
+
+function startNotificationPolling() {
+  stopNotificationPolling();
+  if (!state.currentUser) return;
+  loadNotifications();
+  state.notificationPollingId = window.setInterval(() => {
+    if (document.visibilityState === "visible") loadNotifications({ announce: true });
+  }, NOTIFICATION_POLL_INTERVAL_MS);
+}
+
+async function setNotificationRead(notificationId, isRead) {
+  await fetchJson(`/api/notifications/${encodeURIComponent(notificationId)}/read`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ isRead }),
+  }, 15000);
+  const notification = state.notifications.find((item) => item.id === notificationId);
+  if (notification && notification.isRead !== isRead) {
+    notification.isRead = isRead;
+    state.unreadNotificationCount = Math.max(0, state.unreadNotificationCount + (isRead ? -1 : 1));
+  }
+  renderNotifications();
+}
+
+async function markAllNotificationsRead() {
+  if (!state.unreadNotificationCount) return;
+  await fetchJson("/api/notifications/read-all", { method: "POST" }, 15000);
+  state.notifications.forEach((notification) => {
+    notification.isRead = true;
+  });
+  state.unreadNotificationCount = 0;
+  renderNotifications();
+}
+
+async function openNotificationTarget(notification) {
+  if (!notification?.actionView || !canView(notification.actionView)) return;
+  switchView(notification.actionView);
+  if (!notification.entityId) return;
+  if (notification.actionView === "orders" && els.orderSearch) {
+    if (els.syncStatus) els.syncStatus.textContent = `Đang tải đơn ${notification.entityId}...`;
+    const result = await fetchJson("/api/orders?forceRefresh=true", {}, 90000);
+    state.orders = result.rows || [];
+    state.loadedSources.add("orders");
+    const order = state.orders.find(
+      (item) => String(item.id || "").trim() === String(notification.entityId || "").trim(),
+    );
+    state.filters.order = notification.entityId;
+    state.filters.orderStatus = "";
+    state.filters.driverNotificationStatus = "";
+    els.orderSearch.value = notification.entityId;
+    if (els.orderStatusFilter) els.orderStatusFilter.value = "";
+    if (els.driverNotificationStatusFilter) els.driverNotificationStatusFilter.value = "";
+    const orderDate = order ? orderDateKey(order) : "";
+    if (orderDate && els.driverRemittanceDateInput) els.driverRemittanceDateInput.value = orderDate;
+    if (orderDate && els.orderDateToInput) els.orderDateToInput.value = orderDate;
+    renderOrders();
+    if (order) {
+      openOrderDetails(order.id);
+      if (els.syncStatus) els.syncStatus.textContent = `Đã mở đơn ${order.id}`;
+    } else if (els.syncStatus) {
+      els.syncStatus.textContent = `Không tìm thấy đơn ${notification.entityId} trong DON_HANG.`;
+    }
+  } else if (notification.actionView === "contracts" && els.contractSearch) {
+    state.filters.contract = notification.entityId;
+    els.contractSearch.value = notification.entityId;
+    renderContracts();
+  }
+}
+
+async function openNotification(notificationId) {
+  const notification = state.notifications.find((item) => item.id === notificationId);
+  if (!notification) return;
+  if (!notification.isRead) await setNotificationRead(notificationId, true);
+  try {
+    await openNotificationTarget(notification);
+  } catch (error) {
+    if (els.syncStatus) els.syncStatus.textContent = error.message || "Không thể mở nội dung thông báo.";
+  }
+  if (els.notificationPanel) els.notificationPanel.hidden = true;
+  if (els.notificationBell) els.notificationBell.setAttribute("aria-expanded", "false");
 }
 
 function parseDateOnly(value) {
@@ -4125,6 +4348,71 @@ document.querySelectorAll(".nav-item").forEach((button) => {
   button.addEventListener("click", () => switchView(button.dataset.view));
 });
 
+els.notificationBell?.addEventListener("click", async (event) => {
+  event.stopPropagation();
+  const willOpen = els.notificationPanel.hidden;
+  els.notificationPanel.hidden = !willOpen;
+  els.notificationBell.setAttribute("aria-expanded", String(willOpen));
+  if (willOpen) await loadNotifications();
+});
+
+els.notificationPanel?.addEventListener("click", async (event) => {
+  event.stopPropagation();
+  const filterButton = event.target.closest("[data-notification-filter]");
+  if (filterButton) {
+    state.notificationFilter = filterButton.dataset.notificationFilter || "all";
+    renderNotifications();
+    return;
+  }
+  if (event.target.closest("#notificationReadAll")) {
+    try {
+      await markAllNotificationsRead();
+    } catch (error) {
+      if (els.syncStatus) els.syncStatus.textContent = error.message || "Chưa thể đánh dấu tất cả đã đọc.";
+    }
+    return;
+  }
+  const item = event.target.closest("[data-notification-id]");
+  if (!item) return;
+  const notificationId = item.dataset.notificationId;
+  if (event.target.closest('[data-action="toggle-notification-read"]')) {
+    const notification = state.notifications.find((row) => row.id === notificationId);
+    if (!notification) return;
+    try {
+      await setNotificationRead(notificationId, !notification.isRead);
+    } catch (error) {
+      if (els.syncStatus) els.syncStatus.textContent = error.message || "Chưa cập nhật được trạng thái thông báo.";
+    }
+    return;
+  }
+  if (event.target.closest('[data-action="open-notification"]')) {
+    try {
+      await openNotification(notificationId);
+    } catch (error) {
+      if (els.syncStatus) els.syncStatus.textContent = error.message || "Chưa mở được thông báo.";
+    }
+  }
+});
+
+els.notificationPanel?.addEventListener("keydown", async (event) => {
+  if (!event.target.matches('[data-action="open-notification"]')) return;
+  if (event.key !== "Enter" && event.key !== " ") return;
+  event.preventDefault();
+  const notificationId = event.target.closest("[data-notification-id]")?.dataset.notificationId;
+  if (notificationId) await openNotification(notificationId);
+});
+
+document.addEventListener("click", (event) => {
+  if (!els.notificationPanel || els.notificationPanel.hidden) return;
+  if (els.notificationCenter?.contains(event.target)) return;
+  els.notificationPanel.hidden = true;
+  els.notificationBell?.setAttribute("aria-expanded", "false");
+});
+
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible" && state.currentUser) loadNotifications({ announce: true });
+});
+
 els.loginForm?.addEventListener("submit", async (event) => {
   event.preventDefault();
   if (els.loginSubmitButton) els.loginSubmitButton.disabled = true;
@@ -4168,6 +4456,7 @@ els.logoutButton?.addEventListener("click", async () => {
 });
 
 els.refreshButton.addEventListener("click", loadData);
+els.refreshButton.addEventListener("click", () => loadNotifications());
 els.cskhShiftReportForm?.elements.caLamViec?.addEventListener("change", syncCskhShiftForm);
 els.cskhShiftReportForm?.elements.ngay?.addEventListener("change", prefillCskhB2cOrderTotal);
 els.cskhShiftReportFromInput?.addEventListener("change", renderCskhShiftReports);
