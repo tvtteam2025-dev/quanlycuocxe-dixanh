@@ -144,6 +144,7 @@ const systemLogFieldLabels = {
   hoTenLaiXe: "Lái xe",
   soCho: "Số chỗ",
   giaTien: "Giá tiền",
+  giaNiemYet: "Giá Niêm Yết",
   giamGia: "Giảm giá",
   phuThu: "Phụ thu",
   daCoc: "Đã cọc",
@@ -2854,6 +2855,17 @@ function selectedContractType() {
   return els.orderForm.elements.loaiHopDong.value;
 }
 
+function syncOrderListPriceVisibility() {
+  const input = els.orderForm.elements.giaNiemYet;
+  const wrap = document.querySelector("#listPriceWrap");
+  if (!input || !wrap) return;
+  const selectedCustomerType = els.orderForm.querySelector('input[name="loaiKhach"]:checked')?.value;
+  const active = selectedContractType() !== "xe_ghep" && selectedCustomerType === "B2B";
+  wrap.hidden = !active;
+  wrap.classList.toggle("required", active);
+  input.required = active;
+}
+
 function updateOrderTypeUI() {
   const isShared = selectedContractType() === "xe_ghep";
   els.sharedPassengersSection.classList.toggle("active", isShared);
@@ -2897,6 +2909,7 @@ function updateOrderTypeUI() {
     input.disabled = isShared;
     input.required = !isShared;
   });
+  syncOrderListPriceVisibility();
   if (isShared) {
     state.orderBenefits.voucherIds = [];
     state.orderBenefits.promotionIds = [];
@@ -2991,6 +3004,7 @@ function renderSharedPassengerFields() {
           <h4>Tài chính</h4>
           <div class="form-grid three-col">
             <label class="required"><span>Số tiền</span><input class="money-input" data-passenger-field="soTien" data-passenger-index="${index}" inputmode="numeric" required /></label>
+            <label data-passenger-list-price="${index}" hidden><span>Giá Niêm Yết</span><input class="money-input" data-passenger-field="giaNiemYet" data-passenger-index="${index}" inputmode="numeric" value="0" /></label>
             <label><span>Giảm giá</span><input class="money-input" data-passenger-field="giamGia" data-passenger-index="${index}" inputmode="numeric" value="0" /></label>
             <label data-passenger-discount-note="${index}" hidden><span>Ghi chú giảm giá thủ công</span><input data-passenger-field="ghiChuGiamGia" data-passenger-index="${index}" /></label>
             <label><span>Phụ thu</span><input class="money-input" data-passenger-field="phuThu" data-passenger-index="${index}" inputmode="numeric" value="0" /></label>
@@ -3037,9 +3051,28 @@ function renderSharedPassengerFields() {
       </div>
     `;
   }).join("");
+  syncSharedPassengerListPrice();
   syncSharedPassengerPhoneGate();
   syncSharedVoucherAvailability();
   updateOrderPaymentSummary();
+}
+
+function syncSharedPassengerListPrice(index = null) {
+  const cards =
+    index === null
+      ? [...els.sharedPassengerList.querySelectorAll("[data-shared-passenger-card]")]
+      : [...els.sharedPassengerList.querySelectorAll(`[data-shared-passenger-card="${index}"]`)];
+  for (const card of cards) {
+    const customerType = card.querySelector('[data-passenger-field="loaiKhach"]');
+    const input = card.querySelector('[data-passenger-field="giaNiemYet"]');
+    const wrap = card.querySelector("[data-passenger-list-price]");
+    const active = customerType?.value === "B2B";
+    if (wrap) {
+      wrap.hidden = !active;
+      wrap.classList.toggle("required", active);
+    }
+    if (input) input.required = active;
+  }
 }
 
 function collectSharedPassengers() {
@@ -3120,6 +3153,7 @@ function populateSharedPassengerFields(passengers) {
     const surchargeReason = card.querySelector(`[data-passenger-surcharge-reason="${index}"]`);
     if (surchargeReason) surchargeReason.hidden = surcharge <= 0;
   });
+  syncSharedPassengerListPrice();
   syncSharedPassengerPhoneGate();
   syncSharedVoucherAvailability();
   updateOrderPaymentSummary();
@@ -3791,6 +3825,7 @@ function openOrderEditDialog(orderId) {
   els.orderForm.elements.ngayGioDi.value = formatDateTime(order.ngayGioDi) || "";
   setOrderSelectValue(els.orderForm.elements.soCho, order.soCho || order.so_cho || "");
   els.orderForm.elements.giaTien.value = formatMoney(order.giaTien) || "";
+  els.orderForm.elements.giaNiemYet.value = formatMoney(order.giaNiemYet) || "0";
   els.orderForm.elements.giamGia.value = formatMoney(order.giamGia) || "0";
   if (els.orderForm.elements.ghiChuGiamGia) {
     els.orderForm.elements.ghiChuGiamGia.value = order.ghiChuGiamGia || "";
@@ -3886,6 +3921,9 @@ function openCompleteDialog(orderId) {
     detailArticle("Giờ đi", formatDateTime(order.ngayGioDi)),
     detailArticle("Dự kiến kết thúc", formatDateTime(order.ngayGioDuKienKetThuc)),
     detailArticle("Giá tiền", formatMoney(order.giaTien)),
+    String(order.loaiKhach || "").toUpperCase() === "B2B"
+      ? detailArticle("Giá Niêm Yết", formatMoney(order.giaNiemYet) || "0")
+      : "",
     detailArticle("Giảm giá", formatMoney(order.giamGia) || "0"),
     detailArticle("Phụ thu", formatMoney(order.phuThu) || "0"),
     order.phuThu ? detailArticle("Lý do phụ thu", order.lyDoPhuThu || "") : "",
@@ -5268,6 +5306,10 @@ els.orderForm.addEventListener("change", (event) => {
     if (normalized) event.target.value = normalized;
     setDateTimeInputValidity(event.target);
   }
+  if (event.target.name === "loaiKhach") syncOrderListPriceVisibility();
+  if (event.target.dataset?.passengerField === "loaiKhach") {
+    syncSharedPassengerListPrice(event.target.dataset.passengerIndex);
+  }
   if (event.target.dataset?.passengerField === "yeuCauHoaDon") {
     const section = event.target.closest(".shared-passenger-section");
     section?.querySelector(".shared-invoice-fields")?.classList.toggle("active", event.target.checked);
@@ -5452,6 +5494,7 @@ els.orderForm.addEventListener("submit", async (event) => {
     payload.bienKiemSoat = "";
     payload.tyLeNopLai = 0;
     payload.giaTien = parseMoney(payload.giaTien);
+    payload.giaNiemYet = parseMoney(payload.giaNiemYet);
     payload.giamGia = parseMoney(payload.giamGia);
     payload.phuThu = parseMoney(payload.phuThu);
     payload.daCoc = parseMoney(payload.daCoc);
@@ -5461,6 +5504,9 @@ els.orderForm.addEventListener("submit", async (event) => {
     payload.congNo = selectedContractType() === "xe_ghep" ? false : Boolean(document.querySelector("#debtToggle")?.checked);
     payload.congNoChoAi = payload.congNoChoAi || "";
     if (payload.congNo && !payload.congNoChoAi.trim()) throw new Error("Vui lòng nhập đối tượng ghi nhận công nợ.");
+    if (selectedContractType() !== "xe_ghep" && payload.loaiKhach === "B2B" && payload.giaNiemYet <= 0) {
+      throw new Error("Vui lòng nhập Giá Niêm Yết cho đơn nguyên chuyến B2B.");
+    }
     if (payload.giamGia > 0 && !String(payload.ghiChuGiamGia || "").trim()) throw new Error("Vui lòng nhập ghi chú giảm giá thủ công.");
     if (selectedContractType() !== "xe_ghep" && payload.phuThu > 0 && !String(payload.lyDoPhuThu || "").trim()) {
       throw new Error("Vui lòng nhập lý do phụ thu.");
@@ -5473,6 +5519,9 @@ els.orderForm.addEventListener("submit", async (event) => {
         passenger.soDienThoai = requireCustomerPhone(passenger.soDienThoai, `Số điện thoại khách lẻ ${index + 1}`);
         if (!["B2C", "B2B"].includes(String(passenger.loaiKhach || "").toUpperCase())) {
           throw new Error(`Vui lòng chọn loại khách B2C/B2B cho khách lẻ ${index + 1}.`);
+        }
+        if (String(passenger.loaiKhach || "").toUpperCase() === "B2B" && Number(passenger.giaNiemYet || 0) <= 0) {
+          throw new Error(`Vui lòng nhập Giá Niêm Yết cho khách lẻ ${index + 1} B2B.`);
         }
       });
       const duplicateVoucherError = duplicateSharedVoucherMessage();
@@ -5502,6 +5551,7 @@ els.orderForm.addEventListener("submit", async (event) => {
       payload.diemDon = "";
       payload.diemTra = "";
       payload.giaTien = 0;
+      payload.giaNiemYet = 0;
       payload.giamGia = 0;
       payload.phuThu = 0;
       payload.lyDoPhuThu = "";
