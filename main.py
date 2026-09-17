@@ -11,6 +11,8 @@ import sqlite3
 import threading
 import time
 import unicodedata
+import zipfile
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from io import BytesIO, StringIO
 from pathlib import Path
@@ -49,6 +51,7 @@ _NOTIFICATION_DB_READY = False
 SHEET_ID = os.getenv("GOOGLE_SHEET_ID", "")
 LEGACY_SHEET_ID = os.getenv("LEGACY_GOOGLE_SHEET_ID", "")
 LEGACY_READ_ENABLED = os.getenv("LEGACY_READ_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}
+ATTENDANCE_EDITING_ENABLED = os.getenv("ATTENDANCE_EDITING_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}
 SERVICE_ACCOUNT_FILE = os.getenv("GOOGLE_SERVICE_ACCOUNT_FILE", "service-account.json")
 SERVICE_ACCOUNT_JSON = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON", "")
 DEMO_PUBLIC_USERNAME = os.getenv("DEMO_PUBLIC_USERNAME", "demo")
@@ -61,6 +64,8 @@ _LEGACY_SPREADSHEET: Any | None = None
 _WORKSHEET_CACHE: dict[str, Any] = {}
 _HEADER_CHECKED_SHEETS: set[str] = set()
 SHEET_VALUES_CACHE_TTL_SECONDS = max(30, _env_int("SHEET_VALUES_CACHE_TTL_SECONDS", 300))
+LIVE_SHEET_VALUES_CACHE_TTL_SECONDS = max(15, _env_int("LIVE_SHEET_VALUES_CACHE_TTL_SECONDS", 60))
+PUBLIC_SHEET_CACHE_TTL_SECONDS = max(15, _env_int("PUBLIC_SHEET_CACHE_TTL_SECONDS", 60))
 LEGACY_SHEET_VALUES_CACHE_TTL_SECONDS = max(
     300,
     _env_int("LEGACY_SHEET_VALUES_CACHE_TTL_SECONDS", 86400),
@@ -73,6 +78,10 @@ _WORKSHEET_WRITE_LOCKS_LOCK = threading.RLock()
 _LEGACY_VALUES_CACHE: dict[str, dict[str, Any]] = {}
 _LEGACY_VALUES_CACHE_LOCK = threading.RLock()
 _LEGACY_REFRESH_LOCKS: dict[str, threading.Lock] = {}
+_PUBLIC_SHEET_CACHE: dict[str, dict[str, Any]] = {}
+_PUBLIC_SHEET_CACHE_LOCK = threading.RLock()
+_PUBLIC_SHEET_REFRESH_LOCKS: dict[str, threading.Lock] = {}
+_SYSTEM_LOG_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="system-log")
 SESSIONS: dict[str, dict[str, Any]] = {}
 SESSION_IDLE_TIMEOUT_SECONDS = max(300, _env_int("SESSION_IDLE_TIMEOUT_SECONDS", 8 * 60 * 60))
 USER_CACHE_TTL_SECONDS = 30
@@ -99,10 +108,31 @@ CONTRACT_PRICING_SHEET_NAME = os.getenv("CONTRACT_PRICING_SHEET_NAME", "BANG_GIA
 HR_CONTRACTS_SHEET_NAME = os.getenv("HR_CONTRACTS_SHEET_NAME", "HOP_DONG_NHAN_SU")
 ATTENDANCE_OVERRIDES_SHEET_NAME = os.getenv("ATTENDANCE_OVERRIDES_SHEET_NAME", "DIEU_CHINH_CHAM_CONG")
 ATTENDANCE_OVERRIDE_HEADERS = ["month", "viewType", "employeeCode", "day", "mark", "updatedBy", "updatedAt"]
+PAYROLL_LOCKS_SHEET_NAME = os.getenv("PAYROLL_LOCKS_SHEET_NAME", "CHOT_BANG_LUONG")
+PAYROLL_LOCK_HEADERS = ["month", "viewType", "status", "lockedBy", "lockedAt", "payloadJson"]
+PAYROLL_REMITTANCE_SHEET_NAME = os.getenv("PAYROLL_REMITTANCE_SHEET_NAME", "CHUYEN_LUONG")
+PAYROLL_REMITTANCE_HEADERS = ["month", "viewType", "employeeCode", "status", "transferredBy", "transferredAt"]
+PAYROLL_DEDUCTIONS_SHEET_NAME = os.getenv("PAYROLL_DEDUCTIONS_SHEET_NAME", "KHAU_TRU_LUONG")
+PAYROLL_DEDUCTION_HEADERS = ["id", "month", "viewType", "employeeCode", "employeeName", "deductionType", "amount", "note", "createdBy", "createdAt", "updatedBy", "updatedAt", "status"]
+FUEL_RECORDS_SHEET_NAME = os.getenv("FUEL_RECORDS_SHEET_NAME", "DO_XANG_LAI_XE_TRAVEL")
+FUEL_RECORD_HEADERS = ["id", "ngay", "employeeCode", "employeeName", "bienKiemSoat", "loaiNhienLieu", "soLit", "donGiaLit", "thanhTien", "soKmTaplo", "soKmDaChay", "createdBy", "createdAt", "updatedBy", "updatedAt", "status"]
+CAR_WASH_SHEET_NAME = os.getenv("CAR_WASH_SHEET_NAME", "RUA_XE_TRAVEL")
+CAR_WASH_HEADERS = ["id", "ngay", "employeeCode", "employeeName", "bienKiemSoat", "soTien", "ghiChu", "createdBy", "createdAt", "updatedBy", "updatedAt", "status"]
+FUEL_STANDARD_RATE = 0.075
+FUEL_SAVING_THRESHOLD_LIT = 5.0
+FUEL_OVERUSE_FREE_LIT = 10.0
+FUEL_SAVING_BONUS = 500_000
+TRAVEL_REVENUE_BONUS_RATE = 0.10
+FUEL_PRICES_SHEET_NAME = os.getenv("FUEL_PRICES_SHEET_NAME", "GIA_XANG_THEO_THANG")
+FUEL_PRICE_HEADERS = ["month", "donGiaLit", "createdBy", "createdAt", "updatedBy", "updatedAt", "status"]
 DRIVER_SALARIES_SHEET_NAME = os.getenv("DRIVER_SALARIES_SHEET_NAME", "KHAI_BAO_LUONG_LAI_XE")
-DRIVER_SALARY_HEADERS = ["employeeCode", "employeeName", "bankName", "accountNumber", "accountHolder", "effectiveMonth", "baseSalary", "allowance", "createdBy", "createdAt", "allowanceType", "status"]
+DRIVER_SALARY_HEADERS = ["employeeCode", "employeeName", "bankName", "accountNumber", "accountHolder", "effectiveMonth", "baseSalary", "allowance", "createdBy", "createdAt", "allowanceType", "status", "allowancesJson"]
 ALLOWANCE_TYPES_SHEET_NAME = os.getenv("ALLOWANCE_TYPES_SHEET_NAME", "DANH_MUC_PHU_CAP")
 ALLOWANCE_TYPE_HEADERS = ["id", "name", "status", "updatedBy", "updatedAt"]
+DEDUCTION_TYPES_SHEET_NAME = os.getenv("DEDUCTION_TYPES_SHEET_NAME", "DANH_MUC_KHOAN_TRU")
+DEDUCTION_TYPE_HEADERS = ["id", "name", "status", "updatedBy", "updatedAt"]
+PAYROLL_NOTES_SHEET_NAME = os.getenv("PAYROLL_NOTES_SHEET_NAME", "GHI_CHU_BANG_LUONG")
+PAYROLL_NOTE_HEADERS = ["id", "month", "viewType", "employeeCode", "note", "updatedBy", "updatedAt", "status"]
 
 ROLE_LABELS = {
     "admin": "Admin",
@@ -157,11 +187,43 @@ ROLE_PERMISSIONS = {
             "export_commissions",
             "manage_remittance_status",
             "manage_system_catalogs",
+            "manage_attendance",
+            "manage_fuel",
+            "manage_driver_salaries",
+            "manage_payroll_deductions",
+            "lock_payroll",
         ],
     },
     "ke_toan": {
-        "views": ["orders", "invoiceOrders", "debtOrders", "commissionOrders", "reports", "overnightCalculator"],
-        "actions": ["manage_invoices", "create_invoice_groups", "export_invoices", "export_excel", "export_debts", "manage_debts", "manage_commissions", "export_commissions", "manage_remittance_status"],
+        "views": [
+            "orders",
+            "attendance",
+            "cargoAttendance",
+            "fuel",
+            "driverSalaries",
+            "payroll",
+            "invoiceOrders",
+            "debtOrders",
+            "commissionOrders",
+            "reports",
+            "overnightCalculator",
+        ],
+        "actions": [
+            "manage_invoices",
+            "create_invoice_groups",
+            "export_invoices",
+            "export_excel",
+            "export_debts",
+            "manage_debts",
+            "manage_commissions",
+            "export_commissions",
+            "manage_remittance_status",
+            "manage_attendance",
+            "manage_fuel",
+            "manage_driver_salaries",
+            "manage_payroll_deductions",
+            "lock_payroll",
+        ],
     },
     "cskh": {
         "views": [
@@ -802,9 +864,23 @@ def request_path_allowed_for_role(request: Request, user: dict[str, Any]) -> boo
         return "calendar" in user_permissions(role, user.get("extraPermissions")).get("views", [])
     if path == "/api/accounting/attendance" and method in {"GET", "POST"}:
         return role in {"admin", "ke_toan"}
+    if path.startswith("/api/accounting/fuel") and method in {"GET", "POST", "PUT", "DELETE"}:
+        return role in {"admin", "ke_toan"}
+    if path.startswith("/api/accounting/car-wash") and method in {"GET", "POST", "PUT", "DELETE"}:
+        return role in {"admin", "ke_toan"}
+    if path == "/api/accounting/payroll-lock" and method == "POST":
+        return role in {"admin", "ke_toan"}
+    if path.startswith("/api/accounting/payroll-closed") or path == "/api/accounting/payroll-remittance":
+        return role in {"admin", "ke_toan"}
     if path.startswith("/api/accounting/driver-salaries") and method in {"GET", "POST", "DELETE"}:
         return role in {"admin", "ke_toan"}
     if path.startswith("/api/accounting/allowance-types") and method in {"GET", "POST", "PUT", "DELETE"}:
+        return role in {"admin", "ke_toan"}
+    if path.startswith("/api/accounting/payroll-deductions") and method in {"GET", "POST", "PUT", "DELETE"}:
+        return role in {"admin", "ke_toan"}
+    if path.startswith("/api/accounting/deduction-types") and method in {"GET", "POST", "PUT", "DELETE"}:
+        return role in {"admin", "ke_toan"}
+    if path.startswith("/api/accounting/payroll-notes") and method in {"GET", "PUT"}:
         return role in {"admin", "ke_toan"}
     if path.startswith("/api/cskh-shift-reports"):
         if method == "GET":
@@ -875,6 +951,22 @@ def require_admin(request: Request) -> dict[str, Any]:
     return user
 
 
+def is_accounting_app_request(request: Request) -> bool:
+    return request.headers.get("x-app-scope", "").strip().lower() == "accounting"
+
+
+def accounting_app_role_allowed(user: dict[str, Any]) -> bool:
+    return str(user.get("role") or "") in {"admin", "ke_toan"}
+
+
+def require_accounting_managed_user(request: Request, user: dict[str, Any]) -> None:
+    if is_accounting_app_request(request) and str(user.get("role") or "") != "ke_toan":
+        raise HTTPException(
+            status_code=403,
+            detail="Ứng dụng Kế toán chỉ được quản lý tài khoản Kế toán.",
+        )
+
+
 @app.middleware("http")
 async def public_demo_auth(request: Request, call_next):
     path = request.url.path
@@ -891,6 +983,11 @@ async def public_demo_auth(request: Request, call_next):
     user = session_user_from_request(request)
     if not user:
         return unauthorized_response()
+    if is_accounting_app_request(request) and not accounting_app_role_allowed(user):
+        return JSONResponse(
+            {"detail": "Ứng dụng này chỉ dành cho tài khoản Kế toán hoặc Admin."},
+            status_code=403,
+        )
     request.state.current_user = user
     if not request_path_allowed_for_role(request, user):
         return json_forbidden_response()
@@ -1098,16 +1195,80 @@ class AttendanceOverrideInput(BaseModel):
     mark: str = Field(pattern="^(X|O|KL)$")
 
 
+class PayrollLockInput(BaseModel):
+    month: str = Field(pattern=r"^\d{4}-\d{2}$")
+    viewType: str = Field(pattern="^(travel|cargo)$")
+
+
+class PayrollRemittanceInput(BaseModel):
+    month: str = Field(pattern=r"^\d{4}-\d{2}$")
+    viewType: str = Field(pattern="^(travel|cargo)$")
+    employeeCode: str = Field(min_length=1, max_length=30)
+
+
+class PayrollDeductionInput(BaseModel):
+    month: str = Field(pattern=r"^\d{4}-\d{2}$")
+    viewType: str = Field(pattern="^(travel|cargo)$")
+    employeeCode: str = Field(min_length=1, max_length=30)
+    employeeName: str = Field(default="", max_length=150)
+    deductionType: str = Field(min_length=1, max_length=100)
+    amount: float = Field(gt=0)
+    note: str = Field(default="", max_length=500)
+
+
+class DeductionTypeInput(BaseModel):
+    name: str = Field(min_length=1, max_length=100)
+
+
+class PayrollNoteInput(BaseModel):
+    month: str = Field(pattern=r"^\d{4}-\d{2}$")
+    viewType: str = Field(pattern="^(travel|cargo)$")
+    employeeCode: str = Field(min_length=1, max_length=30)
+    note: str = Field(default="", max_length=500)
+
+
+class FuelRecordInput(BaseModel):
+    ngay: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}$")
+    employeeCode: str = Field(min_length=1, max_length=30)
+    employeeName: str = Field(default="", max_length=150)
+    bienKiemSoat: str = Field(default="", max_length=50)
+    loaiNhienLieu: str = Field(min_length=1, max_length=100)
+    soLit: float = Field(ge=0)
+    donGiaLit: float = Field(ge=0)
+    soKmTaplo: float = Field(ge=0)
+    soKmDaChay: float = Field(ge=0)
+
+
+class FuelPriceInput(BaseModel):
+    month: str = Field(pattern=r"^\d{4}-\d{2}$")
+    donGiaLit: float = Field(ge=0)
+
+
+class CarWashInput(BaseModel):
+    ngay: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}$")
+    employeeCode: str = Field(min_length=1, max_length=30)
+    employeeName: str = Field(default="", max_length=150)
+    bienKiemSoat: str = Field(default="", max_length=50)
+    soTien: float = Field(default=0, ge=0)
+    ghiChu: str = Field(default="", max_length=500)
+
+
+class DriverSalaryAllowanceInput(BaseModel):
+    type: str = Field(min_length=1, max_length=100)
+    amount: float = Field(ge=0)
+
+
 class DriverSalaryInput(BaseModel):
     employeeCode: str = Field(min_length=1, max_length=30)
     employeeName: str = Field(min_length=1, max_length=150)
-    bankName: str = Field(min_length=1, max_length=100)
-    accountNumber: str = Field(min_length=1, max_length=50)
-    accountHolder: str = Field(min_length=1, max_length=150)
+    bankName: str = Field(default="", max_length=100)
+    accountNumber: str = Field(default="", max_length=50)
+    accountHolder: str = Field(default="", max_length=150)
     effectiveMonth: str = Field(pattern=r"^\d{4}-\d{2}$")
     baseSalary: float = Field(ge=0)
-    allowance: float = Field(ge=0)
+    allowance: float = Field(default=0, ge=0)
     allowanceType: str = Field(default="Khác", min_length=1, max_length=100)
+    allowances: list[DriverSalaryAllowanceInput] = Field(default_factory=list)
 
 
 class AllowanceTypeInput(BaseModel):
@@ -1196,13 +1357,36 @@ class NotificationReadInput(BaseModel):
 OrderInput.model_rebuild()
 
 
-def read_public_sheet(sheet_name: str) -> list[dict[str, str]]:
-    selector = f"sheet={quote(sheet_name)}"
-    url = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/gviz/tq?tqx=out:csv&{selector}"
-    request = UrlRequest(url, headers={"User-Agent": "DixanhOrderManager/1.0"})
-    with urlopen(request, timeout=20) as response:
-        csv_text = response.read().decode("utf-8-sig")
-    return list(csv.DictReader(StringIO(csv_text)))
+def read_public_sheet(sheet_name: str, force_refresh: bool = False) -> list[dict[str, str]]:
+    now = time.monotonic()
+    with _PUBLIC_SHEET_CACHE_LOCK:
+        cached = copy.deepcopy(_PUBLIC_SHEET_CACHE.get(sheet_name))
+        refresh_lock = _PUBLIC_SHEET_REFRESH_LOCKS.setdefault(sheet_name, threading.Lock())
+    if not force_refresh and cached and cached.get("expires_at", 0) > now:
+        return copy.deepcopy(cached.get("rows") or [])
+    with refresh_lock:
+        now = time.monotonic()
+        with _PUBLIC_SHEET_CACHE_LOCK:
+            refreshed = copy.deepcopy(_PUBLIC_SHEET_CACHE.get(sheet_name))
+        if not force_refresh and refreshed and refreshed.get("expires_at", 0) > now:
+            return copy.deepcopy(refreshed.get("rows") or [])
+        selector = f"sheet={quote(sheet_name)}"
+        url = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/gviz/tq?tqx=out:csv&{selector}"
+        request = UrlRequest(url, headers={"User-Agent": "DixanhOrderManager/1.0"})
+        try:
+            with urlopen(request, timeout=20) as response:
+                csv_text = response.read().decode("utf-8-sig")
+            rows = list(csv.DictReader(StringIO(csv_text)))
+        except Exception:
+            if refreshed:
+                return copy.deepcopy(refreshed.get("rows") or [])
+            raise
+        with _PUBLIC_SHEET_CACHE_LOCK:
+            _PUBLIC_SHEET_CACHE[sheet_name] = {
+                "expires_at": time.monotonic() + PUBLIC_SHEET_CACHE_TTL_SECONDS,
+                "rows": copy.deepcopy(rows),
+            }
+        return rows
 
 
 def credentials_path() -> Path:
@@ -1359,8 +1543,15 @@ def get_worksheet(sheet_name: str, headers: list[str]) -> Any:
             CALENDAR_VEHICLE_ORDER_SHEET_NAME,
             CONTRACT_PRICING_SHEET_NAME,
             ATTENDANCE_OVERRIDES_SHEET_NAME,
+            PAYROLL_LOCKS_SHEET_NAME,
+            FUEL_RECORDS_SHEET_NAME,
+            FUEL_PRICES_SHEET_NAME,
             DRIVER_SALARIES_SHEET_NAME,
             ALLOWANCE_TYPES_SHEET_NAME,
+            DEDUCTION_TYPES_SHEET_NAME,
+            PAYROLL_DEDUCTIONS_SHEET_NAME,
+            PAYROLL_NOTES_SHEET_NAME,
+            CAR_WASH_SHEET_NAME,
         }
         if managed_sheet and worksheet.col_count < len(headers):
             worksheet.resize(cols=len(headers))
@@ -1374,6 +1565,25 @@ def get_worksheet(sheet_name: str, headers: list[str]) -> Any:
 
 def worksheet_cache_key(worksheet: Any) -> str:
     return str(getattr(worksheet, "title", "") or id(worksheet))
+
+
+def worksheet_cache_ttl_seconds(key: str) -> int:
+    # Các tab nghiệp vụ được người dùng chỉnh thường xuyên nên dùng cache ngắn;
+    # thao tác ghi trong ứng dụng vẫn cập nhật/xóa cache ngay lập tức.
+    live_sheet_names = {
+        ORDERS_SHEET_NAME,
+        ATTENDANCE_OVERRIDES_SHEET_NAME,
+        PAYROLL_LOCKS_SHEET_NAME,
+        PAYROLL_REMITTANCE_SHEET_NAME,
+        FUEL_RECORDS_SHEET_NAME,
+        FUEL_PRICES_SHEET_NAME,
+        DRIVER_SALARIES_SHEET_NAME,
+        DEDUCTION_TYPES_SHEET_NAME,
+        PAYROLL_DEDUCTIONS_SHEET_NAME,
+        PAYROLL_NOTES_SHEET_NAME,
+        CAR_WASH_SHEET_NAME,
+    }
+    return LIVE_SHEET_VALUES_CACHE_TTL_SECONDS if key in live_sheet_names else SHEET_VALUES_CACHE_TTL_SECONDS
 
 
 def invalidate_worksheet_cache(worksheet: Any) -> None:
@@ -1417,7 +1627,7 @@ def worksheet_values(worksheet: Any, force_refresh: bool = False) -> list[list[A
             raise
         with _SHEET_VALUES_CACHE_LOCK:
             _SHEET_VALUES_CACHE[key] = {
-                "expires_at": time.monotonic() + SHEET_VALUES_CACHE_TTL_SECONDS,
+                "expires_at": time.monotonic() + worksheet_cache_ttl_seconds(key),
                 "values": copy.deepcopy(values),
             }
         return values
@@ -1701,6 +1911,218 @@ def calendar_vehicle_order_worksheet() -> Any:
 
 def attendance_overrides_worksheet() -> Any:
     return get_worksheet(ATTENDANCE_OVERRIDES_SHEET_NAME, ATTENDANCE_OVERRIDE_HEADERS)
+
+
+def payroll_locks_worksheet() -> Any:
+    return get_worksheet(PAYROLL_LOCKS_SHEET_NAME, PAYROLL_LOCK_HEADERS)
+
+
+def payroll_remittance_worksheet() -> Any:
+    return get_worksheet(PAYROLL_REMITTANCE_SHEET_NAME, PAYROLL_REMITTANCE_HEADERS)
+
+
+def payroll_deductions_worksheet() -> Any:
+    return get_worksheet(PAYROLL_DEDUCTIONS_SHEET_NAME, PAYROLL_DEDUCTION_HEADERS)
+
+
+def payroll_notes_worksheet() -> Any:
+    return get_worksheet(PAYROLL_NOTES_SHEET_NAME, PAYROLL_NOTE_HEADERS)
+
+
+def payroll_notes_map(month: str, view_type: str) -> dict[str, dict[str, Any]]:
+    latest: dict[str, dict[str, Any]] = {}
+    # Respect the shared worksheet cache to keep payroll loads responsive.
+    # Save endpoint invalidates this cache immediately after writes.
+    for row in worksheet_records(payroll_notes_worksheet(), PAYROLL_NOTE_HEADERS):
+        if str(row.get("month") or "").strip() != month or str(row.get("viewType") or "").strip().lower() != view_type:
+            continue
+        code = str(row.get("employeeCode") or "").strip().upper()
+        if code:
+            latest[code] = row
+    return {code: row for code, row in latest.items() if normalize_text(row.get("status") or "active") not in {"da xoa", "deleted", "inactive"}}
+
+
+def deduction_types_worksheet() -> Any:
+    return get_worksheet(DEDUCTION_TYPES_SHEET_NAME, DEDUCTION_TYPE_HEADERS)
+
+
+def current_deduction_types() -> list[dict[str, Any]]:
+    """Return the latest version of each deduction type, including inactive entries."""
+    worksheet = deduction_types_worksheet()
+    rows = worksheet_records(worksheet, DEDUCTION_TYPE_HEADERS)
+    if not rows:
+        # Seed a small, editable catalog so the accounting view is useful on
+        # first use while still allowing the accountant to rename/deactivate
+        # entries later.
+        for name in ["Ký quỹ", "Phạt vi phạm", "Tạm ứng", "Bồi thường", "Khấu trừ xăng vượt định mức", "Khác"]:
+            worksheet.append_row([secrets.token_hex(8), name, "active", "Hệ thống", now_iso()], value_input_option="RAW")
+        invalidate_worksheet_cache(worksheet)
+        rows = worksheet_records(worksheet, DEDUCTION_TYPE_HEADERS, force_refresh=True)
+    latest: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        item_id = str(row.get("id") or "").strip()
+        if item_id:
+            latest[item_id] = row
+    return sorted(latest.values(), key=lambda row: normalize_text(row.get("name")))
+
+
+def active_deduction_types() -> list[dict[str, Any]]:
+    return [row for row in current_deduction_types() if normalize_text(row.get("status") or "active") not in {"da xoa", "deleted", "inactive"}]
+
+
+def order_deduction_types(names: list[str]) -> list[str]:
+    """Keep the catch-all `Khác` column at the far right."""
+    unique: list[str] = []
+    for name in names:
+        value = str(name or "").strip()
+        if value and value not in unique:
+            unique.append(value)
+    return sorted(unique, key=lambda value: (normalize_text(value) == "khac", normalize_text(value)))
+
+
+def active_payroll_deductions(month: str = "", view_type: str = "") -> list[dict[str, Any]]:
+    latest: dict[str, dict[str, Any]] = {}
+    for row in worksheet_records(payroll_deductions_worksheet(), PAYROLL_DEDUCTION_HEADERS):
+        row_month = str(row.get("month") or "").strip()
+        row_view = str(row.get("viewType") or "").strip().lower()
+        if month and row_month != month:
+            continue
+        if view_type and row_view != view_type:
+            continue
+        item_id = str(row.get("id") or "").strip()
+        if item_id:
+            latest[item_id] = row
+    return [row for row in latest.values() if normalize_text(row.get("status")) not in {"da xoa", "deleted", "inactive"}]
+
+
+def fuel_records_worksheet() -> Any:
+    return get_worksheet(FUEL_RECORDS_SHEET_NAME, FUEL_RECORD_HEADERS)
+
+
+def fuel_prices_worksheet() -> Any:
+    return get_worksheet(FUEL_PRICES_SHEET_NAME, FUEL_PRICE_HEADERS)
+
+
+def car_wash_worksheet() -> Any:
+    return get_worksheet(CAR_WASH_SHEET_NAME, CAR_WASH_HEADERS)
+
+
+def active_car_wash_records() -> list[dict[str, Any]]:
+    rows = worksheet_records(car_wash_worksheet(), CAR_WASH_HEADERS)
+    latest: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        item_id = str(row.get("id") or "").strip()
+        if item_id:
+            latest[item_id] = row
+    return [row for row in latest.values() if normalize_text(row.get("status")) not in {"da xoa", "deleted", "inactive"}]
+
+
+def active_fuel_records() -> list[dict[str, Any]]:
+    # Dữ liệu nhập trực tiếp trên Sheet dùng cache sống ngắn; thao tác ghi qua
+    # ứng dụng cập nhật cache ngay nên không phải đọc lại toàn bộ tab.
+    rows = worksheet_records(fuel_records_worksheet(), FUEL_RECORD_HEADERS)
+    latest: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        item_id = str(row.get("id") or "").strip()
+        if item_id:
+            latest[item_id] = row
+    return [row for row in latest.values() if normalize_text(row.get("status")) not in {"da xoa", "deleted", "inactive"}]
+
+
+def fuel_plate_key(value: Any) -> str:
+    return re.sub(r"[^a-z0-9]", "", normalize_text(value))
+
+
+def previous_vehicle_fuel_record(plate: str, date_value: str, exclude_id: str = "") -> dict[str, Any] | None:
+    """Find the latest prior odometer for the vehicle, regardless of driver."""
+    plate_key = fuel_plate_key(plate)
+    if not plate_key:
+        return None
+    candidates = []
+    for row in active_fuel_records():
+        if exclude_id and str(row.get("id") or "") == str(exclude_id):
+            continue
+        if fuel_plate_key(row.get("bienKiemSoat")) != plate_key:
+            continue
+        row_date = str(row.get("ngay") or "")[:10]
+        if date_value and row_date and row_date > date_value:
+            continue
+        if float(row.get("soKmTaplo") or 0) <= 0:
+            continue
+        candidates.append(row)
+    candidates.sort(
+        key=lambda row: (
+            str(row.get("ngay") or "")[:10],
+            str(row.get("updatedAt") or row.get("createdAt") or ""),
+        ),
+        reverse=True,
+    )
+    return candidates[0] if candidates else None
+
+
+def monthly_fuel_prices() -> dict[str, dict[str, Any]]:
+    latest: dict[str, dict[str, Any]] = {}
+    for row in worksheet_records(fuel_prices_worksheet(), FUEL_PRICE_HEADERS):
+        month = str(row.get("month") or "").strip()
+        if month:
+            latest[month] = row
+    return latest
+
+
+def fuel_month_lock(month: str) -> dict[str, Any] | None:
+    if not re.fullmatch(r'\d{4}-\d{2}', str(month or '')):
+        return None
+    return payroll_lock_for(str(month), 'travel')
+
+
+def fuel_standard_rows(month: str) -> dict[str, Any]:
+    lock = fuel_month_lock(month)
+    if lock:
+        try:
+            lock_snapshot = json.loads(str(lock.get("payloadJson") or "{}"))
+        except (TypeError, ValueError, json.JSONDecodeError):
+            lock_snapshot = {}
+        saved_standard = lock_snapshot.get("fuelStandard") if isinstance(lock_snapshot, dict) else None
+        if isinstance(saved_standard, dict) and isinstance(saved_standard.get("rows"), list):
+            return {**saved_standard, "locked": True, "lockedBy": str(lock.get("lockedBy") or ""), "lockedAt": str(lock.get("lockedAt") or "")}
+    prices = monthly_fuel_prices()
+    price_row = prices.get(month) or {}
+    if normalize_text(price_row.get("status")) in {"da xoa", "deleted", "inactive"}:
+        price_row = {}
+    current_price = max(0, round(float(price_row.get("donGiaLit") or 0)))
+    totals: dict[str, dict[str, Any]] = {}
+    for row in active_fuel_records():
+        if str(row.get("ngay") or "")[:7] != month:
+            continue
+        code = str(row.get("employeeCode") or "").strip().upper()
+        if not code:
+            continue
+        item = totals.setdefault(code, {"employeeCode": code, "employeeName": str(row.get("employeeName") or code), "bienKiemSoat": str(row.get("bienKiemSoat") or ""), "totalKm": 0.0, "totalLit": 0.0})
+        item["totalKm"] += max(0, float(row.get("soKmDaChay") or 0))
+        item["totalLit"] += max(0, float(row.get("soLit") or 0))
+        if not item["employeeName"] or item["employeeName"] == code:
+            item["employeeName"] = str(row.get("employeeName") or code)
+        if row.get("bienKiemSoat"):
+            item["bienKiemSoat"] = str(row.get("bienKiemSoat"))
+    for driver in travel_fuel_drivers():
+        totals.setdefault(driver["employeeCode"], {"employeeCode": driver["employeeCode"], "employeeName": driver["employeeName"], "bienKiemSoat": driver.get("bienKiemSoat", ""), "totalKm": 0.0, "totalLit": 0.0})
+    result = []
+    for item in sorted(totals.values(), key=lambda row: normalize_text(row["employeeName"])):
+        standard_lit = item["totalKm"] * FUEL_STANDARD_RATE
+        difference_lit = item["totalLit"] - standard_lit
+        overuse_lit = max(0.0, difference_lit - FUEL_OVERUSE_FREE_LIT)
+        saving_lit = max(0.0, -difference_lit)
+        result.append({
+            **item,
+            "standardRate": FUEL_STANDARD_RATE,
+            "standardLit": round(standard_lit, 2),
+            "differenceLit": round(difference_lit, 2),
+            "overuseLit": round(overuse_lit, 2),
+            "overuseCharge": round(overuse_lit * current_price),
+            "savingLit": round(saving_lit, 2),
+            "savingBonus": FUEL_SAVING_BONUS if saving_lit > FUEL_SAVING_THRESHOLD_LIT else 0,
+        })
+    return {"month": month, "standardRate": FUEL_STANDARD_RATE, "price": current_price, "priceDeclared": bool(price_row and normalize_text(price_row.get("status")) not in {"da xoa", "deleted", "inactive"}), "rows": result, "locked": bool(lock), "lockedBy": str(lock.get("lockedBy") or "") if lock else "", "lockedAt": str(lock.get("lockedAt") or "") if lock else ""}
 
 
 def driver_salaries_worksheet() -> Any:
@@ -2393,15 +2815,13 @@ def append_worksheet_rows(worksheet: Any, rows: list[list[Any]]) -> None:
     if not rows:
         return
     with worksheet_write_lock(worksheet):
-        # Việc tìm dòng trống và ghi phải nằm trong cùng một khóa; nếu không hai
-        # request đồng thời có thể chọn cùng một dòng và ghi đè dữ liệu của nhau.
-        existing_values = worksheet.get_all_values()
-        start_row = max(len(existing_values) + 1, 2)
-        required_rows = start_row + len(rows) - 1
-        if required_rows > worksheet.row_count:
-            worksheet.add_rows(required_rows - worksheet.row_count)
+        # API append của Google tự chọn dòng trống theo cách nguyên tử. Nhờ đó
+        # không cần đọc toàn bộ sheet trước mỗi lần ghi (nguồn gây chậm chính).
+        key = worksheet_cache_key(worksheet)
+        with _SHEET_VALUES_CACHE_LOCK:
+            cached = copy.deepcopy(_SHEET_VALUES_CACHE.get(key))
+        sheet_headers = (cached.get("values") or [[]])[0] if cached and cached.get("values") else worksheet.row_values(1)
         width = max(len(row) for row in rows)
-        sheet_headers = existing_values[0] if existing_values else []
         normalized_rows = [
             [
                 sheet_storage_value(sheet_headers[index] if index < len(sheet_headers) else "", value)
@@ -2409,26 +2829,17 @@ def append_worksheet_rows(worksheet: Any, rows: list[list[Any]]) -> None:
             ]
             for row in rows
         ]
-        end_column = re.sub(r"\d+$", "", gspread.utils.rowcol_to_a1(1, width))
-        target_range = f"A{start_row}:{end_column}{required_rows}"
-        try:
-            worksheet.update(
-                target_range,
-                normalized_rows,
-                value_input_option="RAW",
-            )
-        except gspread.exceptions.APIError as exc:
-            # A worksheet object may keep an old row_count after rows are deleted
-            # manually in Google Sheets. Expand the real grid and retry once.
-            if "exceeds grid limits" not in str(exc).lower():
-                raise
-            worksheet.resize(rows=max(required_rows + 100, worksheet.row_count + 100))
-            worksheet.update(
-                target_range,
-                normalized_rows,
-                value_input_option="RAW",
-            )
-        invalidate_worksheet_cache(worksheet)
+        worksheet.append_rows(normalized_rows, value_input_option="RAW")
+        if cached and isinstance(cached.get("values"), list):
+            cached_values = copy.deepcopy(cached["values"])
+            cached_values.extend(normalized_rows)
+            with _SHEET_VALUES_CACHE_LOCK:
+                _SHEET_VALUES_CACHE[key] = {
+                    "expires_at": time.monotonic() + worksheet_cache_ttl_seconds(key),
+                    "values": cached_values,
+                }
+        else:
+            invalidate_worksheet_cache(worksheet)
 
 
 def row_by_id(rows: list[dict[str, Any]], row_id: str) -> dict[str, Any] | None:
@@ -2480,22 +2891,25 @@ def log_action(
 ) -> None:
     user = current_user(request)
     display_name = str(user.get("username") or user.get("displayName") or "").strip()
-    append_system_log(
+    # Nhật ký không cần chặn phản hồi của thao tác nghiệp vụ. Ghi tuần tự trên
+    # một worker nền để người dùng nhận kết quả ngay sau khi dữ liệu chính lưu xong.
+    _SYSTEM_LOG_EXECUTOR.submit(
+        append_system_log,
         display_name,
         str(user.get("role") or ""),
         action,
         target_type,
         target_id,
         note,
-        before,
-        after,
+        copy.deepcopy(before),
+        copy.deepcopy(after),
     )
 
 
 def customer_records() -> list[dict[str, Any]]:
     worksheet = customers_worksheet()
     records = worksheet_records(worksheet, CUSTOMER_HEADERS)
-    values = worksheet.get_all_values()
+    values = worksheet_values(worksheet)
     actual_headers = values[0] if values else []
 
     def header_key(value: Any) -> str:
@@ -2869,10 +3283,12 @@ def api_me(request: Request) -> dict[str, Any]:
 
 
 @app.post("/api/login")
-def api_login(payload: LoginInput) -> Response:
+def api_login(payload: LoginInput, request: Request) -> Response:
     user = authenticate_user(payload.username, payload.password)
     if not user:
         raise HTTPException(status_code=401, detail="Tên đăng nhập hoặc mật khẩu không đúng.")
+    if is_accounting_app_request(request) and not accounting_app_role_allowed(user):
+        raise HTTPException(status_code=403, detail="Ứng dụng này chỉ dành cho tài khoản Kế toán hoặc Admin.")
     token = secrets.token_urlsafe(32)
     session_user = public_user(user)
     SESSIONS[token] = {"user": session_user, "lastSeen": datetime.now(timezone.utc)}
@@ -2942,13 +3358,20 @@ def change_my_password(payload: ChangePasswordInput, request: Request) -> dict[s
 def list_users(request: Request) -> dict[str, Any]:
     require_admin(request)
     rows = user_rows_cached()
-    return {"sheetName": USERS_SHEET_NAME, "rows": [public_user(row) for row in rows], "roles": ROLE_LABELS}
+    if is_accounting_app_request(request):
+        rows = [row for row in rows if str(row.get("role") or "") == "ke_toan"]
+        roles = {"ke_toan": ROLE_LABELS["ke_toan"]}
+    else:
+        roles = ROLE_LABELS
+    return {"sheetName": USERS_SHEET_NAME, "rows": [public_user(row) for row in rows], "roles": roles}
 
 
 @app.post("/api/users")
 def create_user(payload: UserInput, request: Request) -> dict[str, Any]:
     admin = require_admin(request)
     role = payload.role.strip()
+    if is_accounting_app_request(request) and role != "ke_toan":
+        raise HTTPException(status_code=403, detail="Ứng dụng Kế toán chỉ được tạo tài khoản Kế toán.")
     if role not in ROLE_LABELS:
         raise HTTPException(status_code=422, detail="Vai trò không hợp lệ.")
     username = payload.username.strip()
@@ -2981,15 +3404,18 @@ def create_user(payload: UserInput, request: Request) -> dict[str, Any]:
 @app.put("/api/users/{user_id}")
 def update_user(user_id: str, payload: UserUpdateInput, request: Request) -> dict[str, Any]:
     admin = require_admin(request)
-    worksheet = users_worksheet()
     rows = user_rows_cached(force=True)
     current = row_by_id(rows, user_id)
     if current is None:
         raise HTTPException(status_code=404, detail="Không tìm thấy tài khoản.")
+    require_accounting_managed_user(request, current)
+    worksheet = users_worksheet()
 
     username = payload.username.strip()
     role = payload.role.strip()
     status = payload.status.strip()
+    if is_accounting_app_request(request) and role != "ke_toan":
+        raise HTTPException(status_code=403, detail="Ứng dụng Kế toán chỉ được cập nhật tài khoản Kế toán.")
     if role not in ROLE_LABELS:
         raise HTTPException(status_code=422, detail="Vai trò không hợp lệ.")
     if any(
@@ -3060,11 +3486,12 @@ def update_user(user_id: str, payload: UserUpdateInput, request: Request) -> dic
 @app.post("/api/users/{user_id}/reset-password")
 def reset_user_password(user_id: str, payload: ResetPasswordInput, request: Request) -> dict[str, Any]:
     require_admin(request)
-    worksheet = users_worksheet()
     rows = user_rows_cached(force=True)
     row = row_by_id(rows, user_id)
     if row is None:
         raise HTTPException(status_code=404, detail="Không tìm thấy tài khoản.")
+    require_accounting_managed_user(request, row)
+    worksheet = users_worksheet()
     row_number = find_row_by_id(worksheet, user_id)
     if row_number is None:
         raise HTTPException(status_code=404, detail="Không tìm thấy tài khoản.")
@@ -3338,6 +3765,652 @@ def list_roster() -> dict[str, Any]:
     return {"sheetName": ROSTER_SHEET_NAME, "rows": rows, "fetchedAt": now_iso()}
 
 
+def travel_fuel_drivers() -> list[dict[str, str]]:
+    drivers: dict[str, dict[str, str]] = {}
+    for source in roster_rows():
+        if "taivan945kg" in normalize_text(source.get("so_cho")).replace(" ", ""):
+            continue
+        driver_text = str(source.get("hoTenMSNVLaiXe") or "").strip()
+        code_match = re.search(r"-\s*([A-Za-z]{2}\d+)\s*$", driver_text)
+        if not code_match:
+            continue
+        code = code_match.group(1).upper()
+        name = re.sub(r"\s*-\s*[A-Za-z]{2}\d+\s*$", "", driver_text).strip() or code
+        candidate = {"employeeCode": code, "employeeName": name, "bienKiemSoat": str(source.get("bienKiemSoat") or "").strip(), "updatedAt": str(source.get("thoiGianTao") or "")}
+        current = drivers.get(code)
+        if not current:
+            drivers[code] = candidate
+            continue
+        try:
+            if parse_roster_date(source.get("thoiGianTao")) >= parse_roster_date(current.get("updatedAt")):
+                drivers[code] = candidate
+        except Exception:
+            drivers[code] = candidate
+    return sorted(drivers.values(), key=lambda row: normalize_text(row["employeeName"]))
+
+
+def car_wash_date_range(from_date: str = "", to_date: str = "") -> tuple[str, str]:
+    if from_date and not re.fullmatch(r"\d{4}-\d{2}-\d{2}", from_date):
+        raise HTTPException(status_code=400, detail="Ngày bắt đầu không hợp lệ.")
+    if to_date and not re.fullmatch(r"\d{4}-\d{2}-\d{2}", to_date):
+        raise HTTPException(status_code=400, detail="Ngày kết thúc không hợp lệ.")
+    if from_date and to_date and from_date > to_date:
+        raise HTTPException(status_code=400, detail="Ngày bắt đầu không được lớn hơn ngày kết thúc.")
+    return from_date, to_date
+
+
+def filtered_car_wash_records(from_date: str = "", to_date: str = "") -> list[dict[str, Any]]:
+    from_date, to_date = car_wash_date_range(from_date, to_date)
+    rows = []
+    for row in active_car_wash_records():
+        date_value = str(row.get("ngay") or "").strip()
+        parsed_date = parse_existing_date(date_value)
+        date_key = parsed_date.strftime("%Y-%m-%d") if parsed_date else date_value[:10]
+        if from_date and date_key < from_date:
+            continue
+        if to_date and date_key > to_date:
+            continue
+        row["soTien"] = round(float(row.get("soTien") or 0))
+        rows.append(row)
+    return sorted(rows, key=lambda row: (str(row.get("ngay") or ""), str(row.get("createdAt") or "")), reverse=True)
+
+
+def car_wash_on_shift_drivers(date_value: str) -> list[dict[str, Any]]:
+    """Return Travel drivers whose roster entry says they started a shift on a date."""
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", date_value or ""):
+        raise HTTPException(status_code=400, detail="Ngày rửa xe không hợp lệ.")
+    latest: dict[str, dict[str, Any]] = {}
+    for source in roster_rows():
+        source_date = roster_date_key(source)
+        if not source_date:
+            parsed_source_date = parse_existing_date(source.get("thoiGianTao"))
+            source_date = parsed_source_date.strftime("%Y-%m-%d") if parsed_source_date else ""
+        if source_date != date_value or not roster_is_on_shift(source):
+            continue
+        if "taivan945kg" in normalize_text(source.get("so_cho")).replace(" ", ""):
+            continue
+        driver_text = roster_driver_text(source)
+        code = roster_driver_code(driver_text).strip().upper()
+        if not code:
+            code_match = re.search(r"[-–]\s*([A-Za-z]{2}\d+)\s*$", driver_text)
+            code = code_match.group(1).upper() if code_match else ""
+        if not code:
+            continue
+        candidate = {
+            "employeeCode": code,
+            "employeeName": roster_driver_name(driver_text) or code,
+            "bienKiemSoat": str(source.get("bienKiemSoat") or "").strip(),
+        }
+        latest[code] = candidate
+    washed_by_code: dict[str, dict[str, Any]] = {}
+    for row in active_car_wash_records():
+        parsed = parse_existing_date(row.get("ngay"))
+        if parsed and parsed.strftime("%Y-%m-%d") == date_value:
+            washed_by_code[str(row.get("employeeCode") or "").strip().upper()] = row
+    result = []
+    for code, driver in latest.items():
+        existing = washed_by_code.get(code)
+        result.append({**driver, "washed": bool(existing), "washId": str(existing.get("id") or "") if existing else ""})
+    return sorted(result, key=lambda row: normalize_text(row.get("employeeName")))
+
+
+@app.get("/api/accounting/fuel")
+def list_accounting_fuel(request: Request) -> dict[str, Any]:
+    user = current_user(request)
+    if str(user.get("role") or "") not in {"admin", "ke_toan"}:
+        raise HTTPException(status_code=403, detail="Chỉ bộ phận Kế toán được quản lý dữ liệu xăng.")
+    result = []
+    for row in active_fuel_records():
+        row["thanhTien"] = round(float(row.get("soLit") or 0) * float(row.get("donGiaLit") or 0))
+        result.append(row)
+    return {"sheetName": FUEL_RECORDS_SHEET_NAME, "rows": sorted(result, key=lambda row: str(row.get("ngay") or ""), reverse=True), "drivers": travel_fuel_drivers(), "fetchedAt": now_iso()}
+
+
+@app.get("/api/accounting/car-wash")
+def list_accounting_car_wash(request: Request, fromDate: str = "", toDate: str = "", date: str = "") -> dict[str, Any]:
+    user = current_user(request)
+    if str(user.get("role") or "") not in {"admin", "ke_toan"}:
+        raise HTTPException(status_code=403, detail="Chỉ bộ phận Kế toán được quản lý dữ liệu rửa xe.")
+    rows = filtered_car_wash_records(fromDate, toDate)
+    vehicles = {str(row.get("bienKiemSoat") or row.get("employeeCode") or "").strip() for row in rows}
+    vehicles.discard("")
+    on_shift_drivers = car_wash_on_shift_drivers(date) if date else []
+    return {"sheetName": CAR_WASH_SHEET_NAME, "rows": rows, "drivers": travel_fuel_drivers(), "onShiftDrivers": on_shift_drivers, "vehicleCount": len(vehicles), "washCount": len(rows), "fromDate": fromDate, "toDate": toDate, "date": date, "fetchedAt": now_iso()}
+
+
+@app.post("/api/accounting/car-wash")
+def create_accounting_car_wash(payload: CarWashInput, request: Request) -> dict[str, Any]:
+    user = current_user(request)
+    if str(user.get("role") or "") not in {"admin", "ke_toan"}:
+        raise HTTPException(status_code=403, detail="Chỉ bộ phận Kế toán được nhập dữ liệu rửa xe.")
+    code = payload.employeeCode.strip().upper()
+    duplicate = next((row for row in active_car_wash_records() if (parse_existing_date(row.get("ngay")) and parse_existing_date(row.get("ngay")).strftime("%Y-%m-%d") == payload.ngay) and str(row.get("employeeCode") or "").strip().upper() == code), None)
+    if duplicate:
+        raise HTTPException(status_code=409, detail="Xe này đã được xác nhận rửa trong ngày.")
+    driver = next((row for row in travel_fuel_drivers() if row["employeeCode"] == code), None)
+    row = {"id": secrets.token_hex(8), "ngay": payload.ngay, "employeeCode": code, "employeeName": (driver or {}).get("employeeName") or payload.employeeName.strip() or code, "bienKiemSoat": (driver or {}).get("bienKiemSoat") or payload.bienKiemSoat.strip(), "soTien": round(payload.soTien), "ghiChu": payload.ghiChu.strip(), "createdBy": current_user_display_name(request), "createdAt": now_iso(), "updatedBy": "", "updatedAt": "", "status": "active"}
+    worksheet = car_wash_worksheet()
+    append_worksheet_row(worksheet, [row.get(header, "") for header in CAR_WASH_HEADERS])
+    invalidate_worksheet_cache(worksheet)
+    return {"ok": True, "row": row}
+
+
+@app.put("/api/accounting/car-wash/{record_id}")
+def update_accounting_car_wash(record_id: str, payload: CarWashInput, request: Request) -> dict[str, Any]:
+    user = current_user(request)
+    if str(user.get("role") or "") not in {"admin", "ke_toan"}:
+        raise HTTPException(status_code=403, detail="Chỉ bộ phận Kế toán được sửa dữ liệu rửa xe.")
+    worksheet = car_wash_worksheet()
+    row_number = find_row_by_id(worksheet, record_id)
+    if row_number is None:
+        raise HTTPException(status_code=404, detail="Không tìm thấy lần rửa xe.")
+    existing = row_by_id(worksheet_records(worksheet, CAR_WASH_HEADERS), record_id) or {}
+    code = payload.employeeCode.strip().upper()
+    driver = next((row for row in travel_fuel_drivers() if row["employeeCode"] == code), None)
+    updated = {**existing, "id": record_id, "ngay": payload.ngay, "employeeCode": code, "employeeName": (driver or {}).get("employeeName") or payload.employeeName.strip() or code, "bienKiemSoat": (driver or {}).get("bienKiemSoat") or payload.bienKiemSoat.strip(), "soTien": round(payload.soTien), "ghiChu": payload.ghiChu.strip(), "updatedBy": current_user_display_name(request), "updatedAt": now_iso(), "status": "active"}
+    update_row_by_headers(worksheet, row_number, CAR_WASH_HEADERS, updated)
+    return {"ok": True, "row": updated}
+
+
+@app.delete("/api/accounting/car-wash/{record_id}")
+def delete_accounting_car_wash(record_id: str, request: Request) -> dict[str, Any]:
+    user = current_user(request)
+    if str(user.get("role") or "") not in {"admin", "ke_toan"}:
+        raise HTTPException(status_code=403, detail="Chỉ bộ phận Kế toán được xóa dữ liệu rửa xe.")
+    worksheet = car_wash_worksheet()
+    row_number = find_row_by_id(worksheet, record_id)
+    if row_number is None:
+        raise HTTPException(status_code=404, detail="Không tìm thấy lần rửa xe.")
+    existing = row_by_id(worksheet_records(worksheet, CAR_WASH_HEADERS), record_id) or {}
+    deleted = {**existing, "status": "Đã xóa", "updatedBy": current_user_display_name(request), "updatedAt": now_iso()}
+    update_row_by_headers(worksheet, row_number, CAR_WASH_HEADERS, deleted)
+    return {"ok": True}
+
+
+@app.get("/api/accounting/car-wash.xlsx")
+def export_accounting_car_wash(request: Request, fromDate: str = "", toDate: str = "") -> Response:
+    user = current_user(request)
+    if str(user.get("role") or "") not in {"admin", "ke_toan"}:
+        raise HTTPException(status_code=403, detail="Chỉ bộ phận Kế toán được xuất dữ liệu rửa xe.")
+    rows = filtered_car_wash_records(fromDate, toDate)
+    try:
+        from openpyxl import Workbook
+        from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+        from openpyxl.utils import get_column_letter
+    except ImportError as exc:
+        raise HTTPException(status_code=500, detail="Thiếu thư viện xuất Excel.") from exc
+    vehicles = {str(row.get("bienKiemSoat") or row.get("employeeCode") or "").strip() for row in rows}
+    vehicles.discard("")
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "Rua xe"
+    sheet.sheet_view.showGridLines = False
+    headers = ["STT", "Ngày", "Tài xế", "Mã NV", "BSX", "Trạng thái", "Người xác nhận", "Thời gian"]
+    sheet.merge_cells(start_row=1, start_column=1, end_row=1, end_column=len(headers))
+    title = sheet.cell(1, 1, "CHI TIẾT RỬA XE")
+    title.font = Font(bold=True, size=16, color="FFFFFF")
+    title.fill = PatternFill("solid", fgColor="0B5963")
+    title.alignment = Alignment(horizontal="center")
+    sheet.merge_cells(start_row=2, start_column=1, end_row=2, end_column=len(headers))
+    sheet.cell(2, 1, f"Từ ngày {fromDate or "--"} đến ngày {toDate or "--"} · {len(vehicles)} xe · {len(rows)} lượt rửa")
+    sheet.cell(2, 1).font = Font(italic=True, color="365A60")
+    thin = Side(style="thin", color="CBD5E1")
+    border = Border(left=thin, right=thin, top=thin, bottom=thin)
+    for column, header in enumerate(headers, 1):
+        cell = sheet.cell(4, column, header)
+        cell.font = Font(bold=True, color="12343B")
+        cell.fill = PatternFill("solid", fgColor="DDEFF0")
+        cell.border = border
+        cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    for index, row in enumerate(rows, 1):
+        values = [index, row.get("ngay", ""), row.get("employeeName", ""), row.get("employeeCode", ""), row.get("bienKiemSoat", ""), "Đã rửa", row.get("updatedBy") or row.get("createdBy", ""), row.get("updatedAt") or row.get("createdAt", "")]
+        for column, value in enumerate(values, 1):
+            cell = sheet.cell(index + 4, column, value)
+            cell.border = border
+            cell.alignment = Alignment(vertical="center", wrap_text=True)
+    widths = [6, 14, 25, 12, 16, 16, 24, 24]
+    for column, width in enumerate(widths, 1):
+        sheet.column_dimensions[get_column_letter(column)].width = width
+    sheet.freeze_panes = "A5"
+    sheet.auto_filter.ref = f"A4:{get_column_letter(len(headers))}{max(4, len(rows) + 4)}"
+
+    # A compact second tab lets accounting review wash frequency by driver
+    # without manually counting the detailed daily entries.
+    summary_sheet = workbook.create_sheet("Tong hop luot rua")
+    summary_sheet.sheet_view.showGridLines = False
+    summary_headers = ["STT", "Tài xế", "Mã NV", "BSX", "Số lần rửa", "Lần rửa gần nhất"]
+    summary_sheet.merge_cells(start_row=1, start_column=1, end_row=1, end_column=len(summary_headers))
+    summary_title = summary_sheet.cell(1, 1, "TỔNG HỢP SỐ LẦN RỬA XE")
+    summary_title.font = Font(bold=True, size=16, color="FFFFFF")
+    summary_title.fill = PatternFill("solid", fgColor="0B5963")
+    summary_title.alignment = Alignment(horizontal="center")
+    summary_sheet.merge_cells(start_row=2, start_column=1, end_row=2, end_column=len(summary_headers))
+    summary_sheet.cell(2, 1, f"Từ ngày {fromDate or '--'} đến ngày {toDate or '--'} · {len(vehicles)} xe · {len(rows)} lượt rửa")
+    summary_sheet.cell(2, 1).font = Font(italic=True, color="365A60")
+    for column, header in enumerate(summary_headers, 1):
+        cell = summary_sheet.cell(4, column, header)
+        cell.font = Font(bold=True, color="12343B")
+        cell.fill = PatternFill("solid", fgColor="DDEFF0")
+        cell.border = border
+        cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    grouped: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        code = str(row.get("employeeCode") or "").strip().upper()
+        key = code or str(row.get("bienKiemSoat") or "").strip()
+        if not key:
+            continue
+        item = grouped.setdefault(key, {
+            "employeeName": row.get("employeeName", ""),
+            "employeeCode": code,
+            "bienKiemSoat": row.get("bienKiemSoat", ""),
+            "count": 0,
+            "latestDate": row.get("ngay", ""),
+        })
+        item["count"] += 1
+        if not item.get("latestDate"):
+            item["latestDate"] = row.get("ngay", "")
+    summary_rows = sorted(grouped.values(), key=lambda item: normalize_text(item.get("employeeName")))
+    for index, item in enumerate(summary_rows, 1):
+        values = [index, item.get("employeeName", ""), item.get("employeeCode", ""), item.get("bienKiemSoat", ""), item.get("count", 0), item.get("latestDate", "")]
+        for column, value in enumerate(values, 1):
+            cell = summary_sheet.cell(index + 4, column, value)
+            cell.border = border
+            cell.alignment = Alignment(vertical="center", wrap_text=True)
+            if column == 5:
+                cell.number_format = "#,##0"
+    summary_widths = [6, 28, 12, 16, 14, 18]
+    for column, width in enumerate(summary_widths, 1):
+        summary_sheet.column_dimensions[get_column_letter(column)].width = width
+    summary_sheet.freeze_panes = "A5"
+    summary_sheet.auto_filter.ref = f"A4:{get_column_letter(len(summary_headers))}{max(4, len(summary_rows) + 4)}"
+    output = BytesIO()
+    workbook.save(output)
+    output.seek(0)
+    return Response(content=output.getvalue(), media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", headers={"Content-Disposition": f'attachment; filename="chi-tiet-rua-xe-{fromDate or "all"}-{toDate or "all"}.xlsx"'})
+
+
+@app.post("/api/accounting/fuel")
+def create_accounting_fuel(payload: FuelRecordInput, request: Request) -> dict[str, Any]:
+    user = current_user(request)
+    if str(user.get("role") or "") not in {"admin", "ke_toan"}:
+        raise HTTPException(status_code=403, detail="Chỉ bộ phận Kế toán được nhập dữ liệu xăng.")
+    if fuel_month_lock(payload.ngay[:7]):
+        raise HTTPException(status_code=409, detail="Thang da chot luong, khong the sua dinh muc xang.")
+    code = payload.employeeCode.strip().upper()
+    driver = next((row for row in travel_fuel_drivers() if row["employeeCode"] == code), None)
+    plate = payload.bienKiemSoat.strip() or str((driver or {}).get("bienKiemSoat") or "").strip()
+    previous = previous_vehicle_fuel_record(plate, payload.ngay)
+    if previous and payload.soKmTaplo < float(previous.get("soKmTaplo") or 0):
+        raise HTTPException(
+            status_code=422,
+            detail=f"Số km taplo của xe {plate} không được nhỏ hơn mốc gần nhất {float(previous.get('soKmTaplo') or 0):g} km.",
+        )
+    row = {
+        "id": secrets.token_hex(8), "ngay": payload.ngay, "employeeCode": code,
+        "employeeName": (driver or {}).get("employeeName") or payload.employeeName.strip() or code,
+        "bienKiemSoat": plate,
+        "loaiNhienLieu": payload.loaiNhienLieu.strip(), "soLit": payload.soLit,
+        "donGiaLit": payload.donGiaLit, "thanhTien": round(payload.soLit * payload.donGiaLit),
+        "soKmTaplo": payload.soKmTaplo, "soKmDaChay": payload.soKmDaChay,
+        "createdBy": current_user_display_name(request), "createdAt": now_iso(), "updatedBy": "", "updatedAt": "", "status": "active",
+    }
+    worksheet = fuel_records_worksheet()
+    append_worksheet_row(worksheet, [row.get(header, "") for header in FUEL_RECORD_HEADERS])
+    invalidate_worksheet_cache(worksheet)
+    return {"ok": True, "row": row}
+
+
+@app.put("/api/accounting/fuel/{record_id}")
+def update_accounting_fuel(record_id: str, payload: FuelRecordInput, request: Request) -> dict[str, Any]:
+    user = current_user(request)
+    if str(user.get("role") or "") not in {"admin", "ke_toan"}:
+        raise HTTPException(status_code=403, detail="Chỉ bộ phận Kế toán được sửa dữ liệu xăng.")
+    worksheet = fuel_records_worksheet()
+    row_number = find_row_by_id(worksheet, record_id)
+    if row_number is None:
+        raise HTTPException(status_code=404, detail="Không tìm thấy lần đổ xăng.")
+    existing = row_by_id(worksheet_records(worksheet, FUEL_RECORD_HEADERS), record_id) or {}
+    if fuel_month_lock(str(existing.get("ngay") or "")[:7]) or fuel_month_lock(payload.ngay[:7]):
+        raise HTTPException(status_code=409, detail="Thang da chot luong, khong the sua dinh muc xang.")
+    code = payload.employeeCode.strip().upper()
+    driver = next((row for row in travel_fuel_drivers() if row["employeeCode"] == code), None)
+    plate = payload.bienKiemSoat.strip() or str((driver or {}).get("bienKiemSoat") or "").strip()
+    previous = previous_vehicle_fuel_record(plate, payload.ngay, record_id)
+    if previous and payload.soKmTaplo < float(previous.get("soKmTaplo") or 0):
+        raise HTTPException(
+            status_code=422,
+            detail=f"Số km taplo của xe {plate} không được nhỏ hơn mốc gần nhất {float(previous.get('soKmTaplo') or 0):g} km.",
+        )
+    updated = {**existing, "id": record_id, "ngay": payload.ngay, "employeeCode": code,
+        "employeeName": (driver or {}).get("employeeName") or payload.employeeName.strip() or code,
+        "bienKiemSoat": plate,
+        "loaiNhienLieu": payload.loaiNhienLieu.strip(), "soLit": payload.soLit, "donGiaLit": payload.donGiaLit,
+        "thanhTien": round(payload.soLit * payload.donGiaLit), "soKmTaplo": payload.soKmTaplo, "soKmDaChay": payload.soKmDaChay,
+        "updatedBy": current_user_display_name(request), "updatedAt": now_iso(), "status": "active"}
+    update_row_by_headers(worksheet, row_number, FUEL_RECORD_HEADERS, updated)
+    return {"ok": True, "row": updated}
+
+
+@app.delete("/api/accounting/fuel/{record_id}")
+def delete_accounting_fuel(record_id: str, request: Request) -> dict[str, Any]:
+    user = current_user(request)
+    if str(user.get("role") or "") not in {"admin", "ke_toan"}:
+        raise HTTPException(status_code=403, detail="Chỉ bộ phận Kế toán được xóa dữ liệu xăng.")
+    worksheet = fuel_records_worksheet()
+    row_number = find_row_by_id(worksheet, record_id)
+    if row_number is None:
+        raise HTTPException(status_code=404, detail="Không tìm thấy lần đổ xăng.")
+    existing = row_by_id(worksheet_records(worksheet, FUEL_RECORD_HEADERS), record_id) or {}
+    if fuel_month_lock(str(existing.get("ngay") or "")[:7]):
+        raise HTTPException(status_code=409, detail="Thang da chot luong, khong the xoa du lieu xang.")
+    deleted = {**existing, "status": "Đã xóa", "updatedBy": current_user_display_name(request), "updatedAt": now_iso()}
+    update_row_by_headers(worksheet, row_number, FUEL_RECORD_HEADERS, deleted)
+    return {"ok": True}
+
+
+@app.get("/api/accounting/fuel-prices")
+def list_accounting_fuel_prices(request: Request) -> dict[str, Any]:
+    user = current_user(request)
+    if str(user.get("role") or "") not in {"admin", "ke_toan"}:
+        raise HTTPException(status_code=403, detail="Chỉ bộ phận Kế toán được quản lý giá xăng.")
+    rows = [row for row in monthly_fuel_prices().values() if normalize_text(row.get("status")) not in {"da xoa", "deleted", "inactive"}]
+    for row in rows:
+        row["locked"] = bool(fuel_month_lock(str(row.get("month") or "")))
+    rows.sort(key=lambda row: str(row.get("month") or ""), reverse=True)
+    return {"sheetName": FUEL_PRICES_SHEET_NAME, "standardRate": FUEL_STANDARD_RATE, "rows": rows}
+
+
+@app.post("/api/accounting/fuel-prices")
+def save_accounting_fuel_price(payload: FuelPriceInput, request: Request) -> dict[str, Any]:
+    user = current_user(request)
+    if str(user.get("role") or "") not in {"admin", "ke_toan"}:
+        raise HTTPException(status_code=403, detail="Chỉ bộ phận Kế toán được khai báo giá xăng.")
+    if fuel_month_lock(payload.month):
+        raise HTTPException(status_code=409, detail="Thang da chot luong, khong the sua gia xang.")
+    row = {"month": payload.month, "donGiaLit": round(payload.donGiaLit), "createdBy": current_user_display_name(request), "createdAt": now_iso(), "updatedBy": "", "updatedAt": "", "status": "active"}
+    worksheet = fuel_prices_worksheet()
+    append_worksheet_row(worksheet, [row.get(header, "") for header in FUEL_PRICE_HEADERS])
+    invalidate_worksheet_cache(worksheet)
+    return {"ok": True, "row": row}
+
+
+@app.delete("/api/accounting/fuel-prices/{month}")
+def delete_accounting_fuel_price(month: str, request: Request) -> dict[str, Any]:
+    user = current_user(request)
+    if str(user.get("role") or "") not in {"admin", "ke_toan"}:
+        raise HTTPException(status_code=403, detail="Chỉ bộ phận Kế toán được xóa giá xăng.")
+    if not re.fullmatch(r"\d{4}-\d{2}", month):
+        raise HTTPException(status_code=400, detail="Tháng không hợp lệ.")
+    if fuel_month_lock(month):
+        raise HTTPException(status_code=409, detail="Thang da chot luong, khong the xoa gia xang.")
+    row = {"month": month, "donGiaLit": 0, "createdBy": "", "createdAt": "", "updatedBy": current_user_display_name(request), "updatedAt": now_iso(), "status": "inactive"}
+    worksheet = fuel_prices_worksheet()
+    append_worksheet_row(worksheet, [row.get(header, "") for header in FUEL_PRICE_HEADERS])
+    invalidate_worksheet_cache(worksheet)
+    return {"ok": True}
+
+
+@app.get("/api/accounting/fuel-standard")
+def list_accounting_fuel_standard(request: Request, month: str = "") -> dict[str, Any]:
+    user = current_user(request)
+    if str(user.get("role") or "") not in {"admin", "ke_toan"}:
+        raise HTTPException(status_code=403, detail="Chỉ bộ phận Kế toán được xem định mức xăng.")
+    if not re.fullmatch(r"\d{4}-\d{2}", month or ""):
+        month = datetime.now().strftime("%Y-%m")
+    return fuel_standard_rows(month)
+
+
+@app.get("/api/accounting/payroll-deductions")
+def list_accounting_payroll_deductions(request: Request, month: str = "", viewType: str = "") -> dict[str, Any]:
+    user = current_user(request)
+    if str(user.get("role") or "") not in {"admin", "ke_toan"}:
+        raise HTTPException(status_code=403, detail="Chỉ bộ phận Kế toán được quản lý khoản trừ lương.")
+    if month and not re.fullmatch(r"\d{4}-\d{2}", month):
+        raise HTTPException(status_code=400, detail="Tháng không hợp lệ.")
+    if viewType and viewType not in {"travel", "cargo"}:
+        raise HTTPException(status_code=400, detail="Loại bảng lương không hợp lệ.")
+    rows = active_payroll_deductions(month, viewType)
+    rows.sort(key=lambda row: (str(row.get("month") or ""), str(row.get("employeeName") or ""), str(row.get("createdAt") or "")), reverse=True)
+    for row in rows:
+        row["amount"] = round(float(row.get("amount") or 0))
+        row["locked"] = bool(payroll_lock_for(str(row.get("month") or ""), str(row.get("viewType") or "travel")))
+    return {"sheetName": PAYROLL_DEDUCTIONS_SHEET_NAME, "rows": rows, "fetchedAt": now_iso()}
+
+
+@app.get("/api/accounting/deduction-types")
+def list_accounting_deduction_types(request: Request, month: str = "") -> dict[str, Any]:
+    user = current_user(request)
+    if str(user.get("role") or "") not in {"admin", "ke_toan"}:
+        raise HTTPException(status_code=403, detail="Chỉ bộ phận Kế toán được quản lý danh mục khoản trừ.")
+    if month and not re.fullmatch(r"\d{4}-\d{2}", month):
+        raise HTTPException(status_code=400, detail="Tháng không hợp lệ.")
+    records = active_payroll_deductions(month)
+    usage: dict[str, dict[str, float]] = {}
+    for record in records:
+        name = str(record.get("deductionType") or "Khoản trừ").strip() or "Khoản trừ"
+        key = normalize_text(name)
+        item = usage.setdefault(key, {"count": 0, "total": 0})
+        item["count"] += 1
+        item["total"] += round(float(record.get("amount") or 0))
+    rows = []
+    for row in current_deduction_types():
+        key = normalize_text(row.get("name"))
+        item = usage.get(key, {"count": 0, "total": 0})
+        rows.append({**row, "usageCount": int(item["count"]), "usageTotal": int(item["total"])})
+    # Keep legacy/custom deduction names visible even if they predate the
+    # catalog sheet or were later deactivated.
+    known = {normalize_text(row.get("name")) for row in rows}
+    for key, item in usage.items():
+        if key not in known:
+            display = next((str(record.get("deductionType") or "Khoản trừ").strip() for record in records if normalize_text(record.get("deductionType")) == key), "Khoản trừ")
+            rows.append({"id": "legacy-" + secrets.token_hex(4), "name": display, "status": "legacy", "updatedBy": "", "updatedAt": "", "usageCount": int(item["count"]), "usageTotal": int(item["total"])})
+    rows.sort(key=lambda row: normalize_text(row.get("name")))
+    return {"sheetName": DEDUCTION_TYPES_SHEET_NAME, "month": month, "rows": rows, "fetchedAt": now_iso()}
+
+
+@app.post("/api/accounting/deduction-types")
+def create_accounting_deduction_type(payload: DeductionTypeInput, request: Request) -> dict[str, Any]:
+    user = current_user(request)
+    if str(user.get("role") or "") not in {"admin", "ke_toan"}:
+        raise HTTPException(status_code=403, detail="Chỉ bộ phận Kế toán được thêm loại khoản trừ.")
+    name = payload.name.strip()
+    if any(normalize_text(row.get("name")) == normalize_text(name) and normalize_text(row.get("status") or "active") not in {"da xoa", "deleted", "inactive"} for row in current_deduction_types()):
+        raise HTTPException(status_code=409, detail="Loại khoản trừ này đã tồn tại.")
+    row = {"id": secrets.token_hex(8), "name": name, "status": "active", "updatedBy": current_user_display_name(request), "updatedAt": now_iso()}
+    worksheet = deduction_types_worksheet()
+    worksheet.append_row([row.get(header, "") for header in DEDUCTION_TYPE_HEADERS], value_input_option="RAW")
+    invalidate_worksheet_cache(worksheet)
+    log_action(request, "create_deduction_type", "payroll", row["id"], after=row)
+    return {"ok": True, "row": row}
+
+
+@app.put("/api/accounting/deduction-types/{item_id}")
+def update_accounting_deduction_type(item_id: str, payload: DeductionTypeInput, request: Request) -> dict[str, Any]:
+    user = current_user(request)
+    if str(user.get("role") or "") not in {"admin", "ke_toan"}:
+        raise HTTPException(status_code=403, detail="Chỉ bộ phận Kế toán được sửa loại khoản trừ.")
+    existing = next((row for row in current_deduction_types() if str(row.get("id")) == item_id and normalize_text(row.get("status") or "active") != "legacy"), None)
+    if not existing:
+        raise HTTPException(status_code=404, detail="Không tìm thấy loại khoản trừ.")
+    name = payload.name.strip()
+    if any(str(row.get("id")) != item_id and normalize_text(row.get("name")) == normalize_text(name) and normalize_text(row.get("status") or "active") not in {"da xoa", "deleted", "inactive", "legacy"} for row in current_deduction_types()):
+        raise HTTPException(status_code=409, detail="Loại khoản trừ này đã tồn tại.")
+    row = {"id": item_id, "name": name, "status": "active", "updatedBy": current_user_display_name(request), "updatedAt": now_iso()}
+    worksheet = deduction_types_worksheet()
+    worksheet.append_row([row.get(header, "") for header in DEDUCTION_TYPE_HEADERS], value_input_option="RAW")
+    invalidate_worksheet_cache(worksheet)
+    log_action(request, "update_deduction_type", "payroll", item_id, after=row)
+    return {"ok": True, "row": row}
+
+
+@app.delete("/api/accounting/deduction-types/{item_id}")
+def delete_accounting_deduction_type(item_id: str, request: Request) -> dict[str, Any]:
+    user = current_user(request)
+    if str(user.get("role") or "") not in {"admin", "ke_toan"}:
+        raise HTTPException(status_code=403, detail="Chỉ bộ phận Kế toán được ngừng sử dụng loại khoản trừ.")
+    existing = next((row for row in current_deduction_types() if str(row.get("id")) == item_id and normalize_text(row.get("status") or "active") not in {"da xoa", "deleted", "inactive"}), None)
+    if not existing:
+        raise HTTPException(status_code=404, detail="Không tìm thấy loại khoản trừ.")
+    row = {"id": item_id, "name": existing.get("name", ""), "status": "inactive", "updatedBy": current_user_display_name(request), "updatedAt": now_iso()}
+    worksheet = deduction_types_worksheet()
+    worksheet.append_row([row.get(header, "") for header in DEDUCTION_TYPE_HEADERS], value_input_option="RAW")
+    invalidate_worksheet_cache(worksheet)
+    log_action(request, "deactivate_deduction_type", "payroll", item_id, after=row)
+    return {"ok": True, "row": row}
+
+
+def _payroll_deduction_driver_name(employee_code: str, supplied_name: str = "") -> str:
+    code = str(employee_code or "").strip().upper()
+    supplied = str(supplied_name or "").strip()
+    for driver in travel_fuel_drivers():
+        if str(driver.get("employeeCode") or "").strip().upper() == code:
+            return str(driver.get("employeeName") or supplied or code).strip()
+    for source in roster_rows():
+        text = str(source.get("hoTenMSNVLaiXe") or "").strip()
+        if re.search(rf"-\s*{re.escape(code)}\s*$", text, re.IGNORECASE):
+            return re.sub(r"\s*-\s*[A-Za-z]{2}\d+\s*$", "", text).strip() or supplied or code
+    return supplied or code
+
+
+@app.post("/api/accounting/payroll-deductions")
+def create_accounting_payroll_deduction(payload: PayrollDeductionInput, request: Request) -> dict[str, Any]:
+    user = current_user(request)
+    if str(user.get("role") or "") not in {"admin", "ke_toan"}:
+        raise HTTPException(status_code=403, detail="Chỉ bộ phận Kế toán được thêm khoản trừ lương.")
+    if payroll_lock_for(payload.month, payload.viewType):
+        raise HTTPException(status_code=409, detail="Tháng đã chốt lương, không thể thêm khoản trừ.")
+    if normalize_text(payload.deductionType) == "khac" and not payload.note.strip():
+        raise HTTPException(status_code=400, detail="Khoản trừ Khác bắt buộc phải có ghi chú.")
+    code = payload.employeeCode.strip().upper()
+    row = {"id": secrets.token_hex(8), "month": payload.month, "viewType": payload.viewType, "employeeCode": code,
+        "employeeName": _payroll_deduction_driver_name(code, payload.employeeName), "deductionType": payload.deductionType.strip(),
+        "amount": round(payload.amount), "note": payload.note.strip(), "createdBy": current_user_display_name(request),
+        "createdAt": now_iso(), "updatedBy": "", "updatedAt": "", "status": "active"}
+    worksheet = payroll_deductions_worksheet()
+    append_worksheet_row(worksheet, [row.get(header, "") for header in PAYROLL_DEDUCTION_HEADERS])
+    invalidate_worksheet_cache(worksheet)
+    log_action(request, "create_payroll_deduction", "payroll", f"{payload.viewType}:{payload.month}:{code}", after=row)
+    return {"ok": True, "row": row}
+
+
+@app.put("/api/accounting/payroll-deductions/{deduction_id}")
+def update_accounting_payroll_deduction(deduction_id: str, payload: PayrollDeductionInput, request: Request) -> dict[str, Any]:
+    user = current_user(request)
+    if str(user.get("role") or "") not in {"admin", "ke_toan"}:
+        raise HTTPException(status_code=403, detail="Chỉ bộ phận Kế toán được sửa khoản trừ lương.")
+    worksheet = payroll_deductions_worksheet()
+    row_number = find_row_by_id(worksheet, deduction_id)
+    if row_number is None:
+        raise HTTPException(status_code=404, detail="Không tìm thấy khoản trừ lương.")
+    existing = row_by_id(worksheet_records(worksheet, PAYROLL_DEDUCTION_HEADERS, force_refresh=True), deduction_id) or {}
+    if payroll_lock_for(str(existing.get("month") or ""), str(existing.get("viewType") or "travel")) or payroll_lock_for(payload.month, payload.viewType):
+        raise HTTPException(status_code=409, detail="Tháng đã chốt lương, không thể sửa khoản trừ.")
+    if normalize_text(payload.deductionType) == "khac" and not payload.note.strip():
+        raise HTTPException(status_code=400, detail="Khoản trừ Khác bắt buộc phải có ghi chú.")
+    code = payload.employeeCode.strip().upper()
+    updated = {**existing, "id": deduction_id, "month": payload.month, "viewType": payload.viewType, "employeeCode": code,
+        "employeeName": _payroll_deduction_driver_name(code, payload.employeeName), "deductionType": payload.deductionType.strip(),
+        "amount": round(payload.amount), "note": payload.note.strip(), "updatedBy": current_user_display_name(request), "updatedAt": now_iso(), "status": "active"}
+    update_row_by_headers(worksheet, row_number, PAYROLL_DEDUCTION_HEADERS, updated)
+    invalidate_worksheet_cache(worksheet)
+    log_action(request, "update_payroll_deduction", "payroll", deduction_id, after=updated)
+    return {"ok": True, "row": updated}
+
+
+@app.delete("/api/accounting/payroll-deductions/{deduction_id}")
+def delete_accounting_payroll_deduction(deduction_id: str, request: Request) -> dict[str, Any]:
+    user = current_user(request)
+    if str(user.get("role") or "") not in {"admin", "ke_toan"}:
+        raise HTTPException(status_code=403, detail="Chỉ bộ phận Kế toán được xóa khoản trừ lương.")
+    worksheet = payroll_deductions_worksheet()
+    row_number = find_row_by_id(worksheet, deduction_id)
+    if row_number is None:
+        raise HTTPException(status_code=404, detail="Không tìm thấy khoản trừ lương.")
+    existing = row_by_id(worksheet_records(worksheet, PAYROLL_DEDUCTION_HEADERS, force_refresh=True), deduction_id) or {}
+    if payroll_lock_for(str(existing.get("month") or ""), str(existing.get("viewType") or "travel")):
+        raise HTTPException(status_code=409, detail="Tháng đã chốt lương, không thể xóa khoản trừ.")
+    deleted = {**existing, "status": "Đã xóa", "updatedBy": current_user_display_name(request), "updatedAt": now_iso()}
+    update_row_by_headers(worksheet, row_number, PAYROLL_DEDUCTION_HEADERS, deleted)
+    invalidate_worksheet_cache(worksheet)
+    log_action(request, "delete_payroll_deduction", "payroll", deduction_id, after=deleted)
+    return {"ok": True}
+
+
+def payroll_lock_for(month: str, view_type: str) -> dict[str, Any] | None:
+    latest: dict[str, dict[str, Any]] = {}
+    for row in worksheet_records(payroll_locks_worksheet(), PAYROLL_LOCK_HEADERS):
+        key = f"{str(row.get('month') or '').strip()}:{str(row.get('viewType') or '').strip()}"
+        if key:
+            latest[key] = row
+    row = latest.get(f"{month}:{view_type}")
+    if row and str(row.get("status") or "").strip().lower() == "locked":
+        return row
+    return None
+
+
+def payroll_remittance_statuses(month: str, view_type: str) -> dict[str, dict[str, Any]]:
+    latest: dict[str, dict[str, Any]] = {}
+    for row in worksheet_records(payroll_remittance_worksheet(), PAYROLL_REMITTANCE_HEADERS):
+        if str(row.get("month") or "").strip() != month or str(row.get("viewType") or "").strip() != view_type:
+            continue
+        code = str(row.get("employeeCode") or "").strip().upper()
+        if code:
+            latest[code] = row
+    return latest
+
+
+@app.get("/api/accounting/payroll-closed")
+def list_closed_accounting_payroll(request: Request, month: str = "", viewType: str = "travel") -> dict[str, Any]:
+    user = current_user(request)
+    if str(user.get("role") or "") not in {"admin", "ke_toan"}:
+        raise HTTPException(status_code=403, detail="Chỉ bộ phận Kế toán được xem bảng lương đã chốt.")
+    if not re.fullmatch(r"\d{4}-\d{2}", month or ""):
+        month = datetime.now().strftime("%Y-%m")
+    if viewType not in {"travel", "cargo"}:
+        raise HTTPException(status_code=400, detail="Loại bảng lương không hợp lệ.")
+    lock = payroll_lock_for(month, viewType)
+    if not lock:
+        return {"month": month, "viewType": viewType, "locked": False, "lockedBy": "", "lockedAt": "", "rows": [], "remittance": {}, "message": "Tháng này chưa chốt lương."}
+    payload = accounting_payroll_rows(month, viewType)
+    statuses = payroll_remittance_statuses(month, viewType)
+    for row in payload.get("rows", []):
+        status = statuses.get(str(row.get("employeeCode") or "").strip().upper())
+        row["remittanceStatus"] = str(status.get("status") or "") if status else ""
+        row["transferredBy"] = str(status.get("transferredBy") or "") if status else ""
+        row["transferredAt"] = str(status.get("transferredAt") or "") if status else ""
+    payload["locked"] = True
+    payload["lockedBy"] = str(lock.get("lockedBy") or "")
+    payload["lockedAt"] = str(lock.get("lockedAt") or "")
+    payload["remittance"] = statuses
+    return payload
+
+
+@app.post("/api/accounting/payroll-remittance")
+def mark_accounting_payroll_remittance(payload: PayrollRemittanceInput, request: Request) -> dict[str, Any]:
+    user = current_user(request)
+    if str(user.get("role") or "") not in {"admin", "ke_toan"}:
+        raise HTTPException(status_code=403, detail="Chỉ bộ phận Kế toán được xác nhận chuyển lương.")
+    if not payroll_lock_for(payload.month, payload.viewType):
+        raise HTTPException(status_code=409, detail="Chỉ được xác nhận chuyển lương sau khi đã chốt bảng lương.")
+    snapshot = accounting_payroll_rows(payload.month, payload.viewType)
+    employee_code = payload.employeeCode.strip().upper()
+    if not any(str(row.get("employeeCode") or "").strip().upper() == employee_code for row in snapshot.get("rows", [])):
+        raise HTTPException(status_code=404, detail="Không tìm thấy tài xế trong bảng lương đã chốt.")
+    row = {"month": payload.month, "viewType": payload.viewType, "employeeCode": employee_code, "status": "transferred", "transferredBy": current_user_display_name(request), "transferredAt": now_iso()}
+    worksheet = payroll_remittance_worksheet()
+    worksheet.append_row([row.get(header, "") for header in PAYROLL_REMITTANCE_HEADERS], value_input_option="RAW")
+    invalidate_worksheet_cache(worksheet)
+    log_action(request, "mark_payroll_remittance", "payroll", f"{payload.viewType}:{payload.month}:{employee_code}", after=row)
+    return {"ok": True, "remittance": row}
+
+
+def payroll_lock_summary(month: str) -> dict[str, dict[str, Any] | None]:
+    return {
+        view_type: payroll_lock_for(month, view_type)
+        for view_type in ("travel", "cargo")
+    }
+
+
 @app.get("/api/accounting/attendance")
 def list_accounting_attendance(request: Request, month: str = "") -> dict[str, Any]:
     user = current_user(request)
@@ -3363,8 +4436,11 @@ def list_accounting_attendance(request: Request, month: str = "") -> dict[str, A
         mark = str(row.get("mark") or "").strip().upper()
         if view_type in {"travel", "cargo"} and employee_code and day and mark in {"X", "O", "KL"}:
             overrides[f"{view_type}:{employee_code}:{day}"] = row
+    locks = payroll_lock_summary(month)
     return {"month": month, "rosterSheetName": ROSTER_SHEET_NAME,
-            "roster": attendance_rows, "overrides": overrides, "fetchedAt": now_iso()}
+            "roster": attendance_rows, "overrides": overrides, "locks": locks,
+            "editingEnabled": ATTENDANCE_EDITING_ENABLED,
+            "fetchedAt": now_iso()}
 
 
 @app.post("/api/accounting/attendance")
@@ -3372,6 +4448,13 @@ def save_accounting_attendance_override(payload: AttendanceOverrideInput, reques
     user = current_user(request)
     if str(user.get("role") or "") not in {"admin", "ke_toan"}:
         raise HTTPException(status_code=403, detail="Chỉ bộ phận Kế toán được sửa bảng chấm công.")
+    if not ATTENDANCE_EDITING_ENABLED:
+        raise HTTPException(
+            status_code=423,
+            detail="Chức năng thay đổi dấu công đang tạm khóa theo yêu cầu quản trị.",
+        )
+    if payroll_lock_for(payload.month, payload.viewType):
+        raise HTTPException(status_code=409, detail="Bảng lương tháng này đã chốt, không thể sửa bảng công.")
     year, month_number = (int(part) for part in payload.month.split("-"))
     next_month = datetime(year + (month_number == 12), 1 if month_number == 12 else month_number + 1, 1)
     day_count = (next_month - timedelta(days=1)).day
@@ -3415,6 +4498,23 @@ def list_driver_salaries(request: Request) -> dict[str, Any]:
         if code and effective_month:
             versions[f"{code}:{effective_month}"] = row
     rows = sorted([row for row in versions.values() if str(row.get("status") or "active") == "active"], key=lambda row: (str(row.get("employeeCode") or ""), str(row.get("effectiveMonth") or "")), reverse=True)
+    for row in rows:
+        allowances: list[dict[str, Any]] = []
+        raw_allowances = str(row.get("allowancesJson") or "").strip()
+        if raw_allowances:
+            try:
+                parsed = json.loads(raw_allowances)
+                if isinstance(parsed, list):
+                    allowances = [
+                        {"type": str(item.get("type") or "Khác").strip() or "Khác", "amount": max(0, round(float(item.get("amount") or 0)))}
+                        for item in parsed if isinstance(item, dict)
+                    ]
+            except (ValueError, TypeError, json.JSONDecodeError):
+                allowances = []
+        if not allowances and float(row.get("allowance") or 0) > 0:
+            allowances = [{"type": str(row.get("allowanceType") or "Khác"), "amount": round(float(row.get("allowance") or 0))}]
+        row["allowances"] = allowances
+        row["totalAllowance"] = sum(item["amount"] for item in allowances)
     return {"drivers": sorted(drivers.values(), key=lambda row: row["employeeName"]), "rows": rows, "sheetName": DRIVER_SALARIES_SHEET_NAME}
 
 
@@ -3423,6 +4523,14 @@ def save_driver_salary(payload: DriverSalaryInput, request: Request) -> dict[str
     user = current_user(request)
     if str(user.get("role") or "") not in {"admin", "ke_toan"}:
         raise HTTPException(status_code=403, detail="Chỉ bộ phận Kế toán được khai báo lương.")
+    allowances = [
+        {"type": item.type.strip(), "amount": round(item.amount)}
+        for item in payload.allowances
+        if item.type.strip() and item.amount >= 0
+    ]
+    if not allowances and payload.allowance > 0:
+        allowances = [{"type": payload.allowanceType.strip(), "amount": round(payload.allowance)}]
+    total_allowance = sum(item["amount"] for item in allowances)
     row = {
         "employeeCode": payload.employeeCode.strip().upper(),
         "employeeName": payload.employeeName.strip(),
@@ -3431,8 +4539,9 @@ def save_driver_salary(payload: DriverSalaryInput, request: Request) -> dict[str
         "accountHolder": payload.accountHolder.strip().upper(),
         "effectiveMonth": payload.effectiveMonth,
         "baseSalary": round(payload.baseSalary),
-        "allowance": round(payload.allowance),
-        "allowanceType": payload.allowanceType.strip(),
+        "allowance": total_allowance,
+        "allowanceType": ", ".join(item["type"] for item in allowances) or "Khác",
+        "allowancesJson": json.dumps(allowances, ensure_ascii=False, separators=(",", ":")),
         "createdBy": current_user_display_name(request),
         "createdAt": now_iso(),
         "status": "active",
@@ -3440,7 +4549,7 @@ def save_driver_salary(payload: DriverSalaryInput, request: Request) -> dict[str
     worksheet = driver_salaries_worksheet()
     worksheet.append_row([row.get(header, "") for header in DRIVER_SALARY_HEADERS], value_input_option="RAW")
     invalidate_worksheet_cache(worksheet)
-    return {"ok": True, "row": row, "totalSalary": row["baseSalary"] + row["allowance"]}
+    return {"ok": True, "row": row, "totalSalary": row["baseSalary"] + total_allowance}
 
 
 @app.delete("/api/accounting/driver-salaries/{employee_code}/{effective_month}")
@@ -3525,6 +4634,1038 @@ def delete_allowance_type(item_id: str, request: Request) -> dict[str, Any]:
     worksheet.append_row([row.get(header, "") for header in ALLOWANCE_TYPE_HEADERS], value_input_option="RAW")
     invalidate_worksheet_cache(worksheet)
     return {"ok": True}
+
+
+def payroll_duration_minutes(raw_value: Any) -> int:
+    text = str(raw_value or "").strip().replace(",", ".")
+    if not text:
+        return 0
+    match = re.fullmatch(r"(\d{1,3}):(\d{2})(?::\d{2})?", text)
+    if match:
+        return int(match.group(1)) * 60 + int(match.group(2))
+    try:
+        return max(0, round(float(text) * 60))
+    except ValueError:
+        return 0
+
+
+def rounded_payroll_overtime_minutes(raw_value: Any) -> int:
+    total_minutes = payroll_duration_minutes(raw_value)
+    hours, minutes = divmod(total_minutes, 60)
+    if minutes <= 15:
+        return hours * 60
+    if minutes <= 45:
+        return hours * 60 + 30
+    return (hours + 1) * 60
+
+
+def accounting_payroll_rows(month: str, view_type: str) -> dict[str, Any]:
+    locked = payroll_lock_for(month, view_type)
+    if locked:
+        try:
+            snapshot = json.loads(str(locked.get("payloadJson") or "{}"))
+        except (TypeError, ValueError, json.JSONDecodeError):
+            snapshot = {}
+        if isinstance(snapshot, dict) and isinstance(snapshot.get("rows"), list):
+            snapshot["locked"] = True
+            snapshot["lockedBy"] = str(locked.get("lockedBy") or "")
+            snapshot["lockedAt"] = str(locked.get("lockedAt") or "")
+            return snapshot
+    year, month_number = (int(part) for part in month.split("-"))
+    next_month = datetime(year + (month_number == 12), 1 if month_number == 12 else month_number + 1, 1)
+    day_count = (next_month - timedelta(days=1)).day
+    required_days = max(0, day_count - 2)
+
+    # Các nguồn dưới đây độc lập với nhau nhưng trước đây bị đọc tuần tự. Khi
+    # cache vừa hết hạn, độ trễ vì vậy bằng tổng thời gian của nhiều tab Google.
+    # Đọc song song giúp lần mở đầu tiên chỉ phải chờ tab chậm nhất.
+    with ThreadPoolExecutor(max_workers=7, thread_name_prefix="payroll-read") as executor:
+        roster_future = executor.submit(roster_rows)
+        overrides_future = executor.submit(
+            lambda: worksheet_records(attendance_overrides_worksheet(), ATTENDANCE_OVERRIDE_HEADERS)
+        )
+        salaries_future = executor.submit(
+            lambda: worksheet_records(driver_salaries_worksheet(), DRIVER_SALARY_HEADERS)
+        )
+        orders_future = executor.submit(all_order_records) if view_type == "travel" else None
+        fuel_future = executor.submit(fuel_standard_rows, month) if view_type == "travel" else None
+        deductions_future = executor.submit(active_payroll_deductions, month, view_type)
+        notes_future = executor.submit(payroll_notes_map, month, view_type)
+
+        roster_sources = roster_future.result()
+        override_sources = overrides_future.result()
+        salary_sources = salaries_future.result()
+        order_sources = orders_future.result() if orders_future else []
+        fuel_payload = fuel_future.result() if fuel_future else {"rows": []}
+        deduction_sources = deductions_future.result()
+        payroll_notes = notes_future.result()
+
+    drivers: dict[str, dict[str, Any]] = {}
+    events: dict[str, str] = {}
+    overtime_events: dict[str, dict[str, Any]] = {}
+    for source in roster_sources:
+        try:
+            event_date = parse_roster_date(source.get("thoiGianTao"))
+        except Exception:
+            continue
+        if event_date.strftime("%Y-%m") != month:
+            continue
+        is_cargo = "taivan945kg" in normalize_text(source.get("so_cho")).replace(" ", "")
+        if (view_type == "cargo") != is_cargo:
+            continue
+        driver_text = str(source.get("hoTenMSNVLaiXe") or "").strip()
+        code_match = re.search(r"-\s*([A-Za-z]{2}\d+)\s*$", driver_text)
+        if not code_match:
+            continue
+        code = code_match.group(1).upper()
+        name = re.sub(r"\s*-\s*[A-Za-z]{2}\d+\s*$", "", driver_text).strip() or code
+        drivers[code] = {"employeeCode": code, "employeeName": name}
+        key = f"{code}:{event_date.day}"
+        status = normalize_text(source.get("trangThaiLenXuongCa"))
+        if view_type == "cargo" and (key not in overtime_events or "len ca" in status):
+            overtime_events[key] = source
+        if view_type == "travel":
+            events[key] = "O" if "xuong ca" in status else "X"
+        elif "len ca" in status:
+            events[key] = "X"
+        elif key not in events:
+            events[key] = "KL"
+
+    overrides: dict[str, str] = {}
+    for source in override_sources:
+        if str(source.get("month") or "").strip() != month or str(source.get("viewType") or "").strip() != view_type:
+            continue
+        code = str(source.get("employeeCode") or "").strip().upper()
+        day = str(source.get("day") or "").strip()
+        mark = str(source.get("mark") or "").strip().upper()
+        if code and day and mark in {"X", "O", "KL"}:
+            overrides[f"{code}:{day}"] = mark
+
+    latest_salary_versions: dict[str, dict[str, Any]] = {}
+    for source in salary_sources:
+        code = str(source.get("employeeCode") or "").strip().upper()
+        effective_month = str(source.get("effectiveMonth") or "").strip()
+        if code and effective_month:
+            latest_salary_versions[f"{code}:{effective_month}"] = source
+    salary_versions: dict[str, list[dict[str, Any]]] = {}
+    for source in latest_salary_versions.values():
+        code = str(source.get("employeeCode") or "").strip().upper()
+        effective_month = str(source.get("effectiveMonth") or "").strip()
+        # Use the active declaration for the matching employee identity.
+        # Finalized months are protected by the payroll snapshot lock.
+        if code and effective_month and str(source.get("status") or "active") == "active":
+            salary_versions.setdefault(code, []).append(source)
+
+    travel_revenue_by_driver: dict[str, float] = {}
+    if view_type == "travel":
+        for order in order_sources:
+            departure = parse_existing_datetime(order.get("ngayGioDi")) or parse_existing_datetime(order.get("createdAt"))
+            if not departure or departure.strftime("%Y-%m") != month:
+                continue
+            code = str(order.get("maNVLaiXe") or "").strip().upper()
+            if not code:
+                match = re.search(r"-\s*([A-Za-z]{2}\d+)\s*$", str(order.get("hoTenLaiXe") or "").strip())
+                code = match.group(1).upper() if match else ""
+            if code:
+                travel_revenue_by_driver[code] = travel_revenue_by_driver.get(code, 0) + order_driver_revenue(order)
+    output_rows = []
+    bonus_amount = 1_000_000 if view_type == "cargo" else 500_000
+    fuel_by_driver = {row["employeeCode"]: row for row in fuel_payload["rows"]} if view_type == "travel" else {}
+    deductions_by_driver: dict[str, list[dict[str, Any]]] = {}
+    for deduction in deduction_sources:
+        code = str(deduction.get("employeeCode") or "").strip().upper()
+        if not code:
+            continue
+        deductions_by_driver.setdefault(code, []).append({
+            "id": str(deduction.get("id") or ""),
+            "type": str(deduction.get("deductionType") or "Khoản trừ"),
+            "amount": round(float(deduction.get("amount") or 0)),
+            "note": str(deduction.get("note") or ""),
+        })
+    for code, driver in sorted(drivers.items(), key=lambda item: normalize_text(item[1]["employeeName"])):
+        salary_candidates = [
+            row for row in salary_versions.get(code, [])
+            if normalize_text(row.get("employeeName")) == normalize_text(driver.get("employeeName"))
+        ]
+        # Fall back to the employee code for older rows without a normalized name.
+        if not salary_candidates:
+            salary_candidates = salary_versions.get(code, [])
+        salary_candidates = sorted(
+            salary_candidates,
+            key=lambda row: (str(row.get("effectiveMonth") or ""), str(row.get("createdAt") or "")),
+        )
+        salary = salary_candidates[-1] if salary_candidates else {}
+        allowances: list[dict[str, Any]] = []
+        try:
+            parsed = json.loads(str(salary.get("allowancesJson") or "[]"))
+            if isinstance(parsed, list):
+                allowances = [{"type": str(item.get("type") or "Khác"), "amount": max(0, round(float(item.get("amount") or 0)))} for item in parsed if isinstance(item, dict)]
+        except (ValueError, TypeError, json.JSONDecodeError):
+            allowances = []
+        if not allowances and float(salary.get("allowance") or 0) > 0:
+            allowances = [{"type": str(salary.get("allowanceType") or "Khác"), "amount": round(float(salary.get("allowance") or 0))}]
+        work_days = sum(1 for day in range(1, day_count + 1) if (overrides.get(f"{code}:{day}") or events.get(f"{code}:{day}") or "KL") == "X")
+        overtime_minutes = 0
+        if view_type == "cargo":
+            for day in range(1, day_count + 1):
+                key = f"{code}:{day}"
+                if (overrides.get(key) or events.get(key) or "KL") == "X":
+                    overtime_minutes += rounded_payroll_overtime_minutes((overtime_events.get(key) or {}).get("soGioTangCa"))
+        base_salary = round(float(salary.get("baseSalary") or 0))
+        total_allowance = sum(item["amount"] for item in allowances)
+        overtime_pay = round(overtime_minutes / 60 * 30_000) if view_type == "cargo" else 0
+        attendance_bonus = bonus_amount if work_days >= required_days else 0
+        fuel = fuel_by_driver.get(code, {})
+        fuel_saving_bonus = int(fuel.get("savingBonus") or 0)
+        fuel_overuse_charge = int(fuel.get("overuseCharge") or 0)
+        travel_revenue = round(travel_revenue_by_driver.get(code, 0)) if view_type == "travel" else 0
+        travel_revenue_bonus = round(travel_revenue * TRAVEL_REVENUE_BONUS_RATE) if view_type == "travel" else 0
+        deductions = deductions_by_driver.get(code, [])
+        total_deduction = sum(item["amount"] for item in deductions)
+        gross_salary = base_salary + total_allowance + overtime_pay + attendance_bonus + travel_revenue_bonus
+        # Fuel overuse is a separate charge collected from the driver, so it
+        # reduces the amount actually paid without being merged into the
+        # user-managed deduction columns. Fuel saving remains a separate bonus
+        # added to the final amount.
+        net_salary = max(0, gross_salary - total_deduction - fuel_overuse_charge + fuel_saving_bonus)
+        payroll_note = str((payroll_notes.get(code) or {}).get("note") or "").strip()
+        if not payroll_note:
+            payroll_note = next((str(item.get("note") or "").strip() for item in deductions if normalize_text(item.get("type")) == "khac" and str(item.get("note") or "").strip()), "")
+        output_rows.append({**driver, "requiredDays": required_days, "workDays": work_days, "baseSalary": base_salary, "allowances": allowances, "totalAllowance": total_allowance, "overtimeMinutes": overtime_minutes, "overtimePay": overtime_pay, "attendanceBonus": attendance_bonus, "travelRevenue": travel_revenue, "travelRevenueBonus": travel_revenue_bonus, "fuelSavingBonus": fuel_saving_bonus, "fuelOveruseCharge": fuel_overuse_charge, "deductions": deductions, "totalDeduction": total_deduction, "grossSalary": gross_salary, "totalSalary": net_salary, "bankName": str(salary.get("bankName") or ""), "accountNumber": str(salary.get("accountNumber") or ""), "accountHolder": str(salary.get("accountHolder") or ""), "salaryEffectiveMonth": str(salary.get("effectiveMonth") or ""), "salaryDeclared": bool(salary), "payrollNote": payroll_note})
+    deduction_types = order_deduction_types([str(item.get("type") or "Khoản trừ").strip() or "Khoản trừ" for row in output_rows for item in (row.get("deductions") or [])])
+    return {"month": month, "viewType": view_type, "dayCount": day_count, "requiredDays": required_days, "bonusAmount": bonus_amount, "travelRevenueTotal": sum(row.get("travelRevenue", 0) for row in output_rows), "travelRevenueBonusRate": round(TRAVEL_REVENUE_BONUS_RATE * 100) if view_type == "travel" else 0, "travelRevenueBonusTotal": sum(row.get("travelRevenueBonus", 0) for row in output_rows), "fuelSavingBonusTotal": sum(row.get("fuelSavingBonus", 0) for row in output_rows), "fuelOveruseChargeTotal": sum(row.get("fuelOveruseCharge", 0) for row in output_rows), "deductionTotal": sum(row.get("totalDeduction", 0) for row in output_rows), "deductionTypes": deduction_types, "overtimeRate": 30_000 if view_type == "cargo" else 0, "rows": output_rows, "locked": False, "lockedBy": "", "lockedAt": "", "fetchedAt": now_iso()}
+
+
+@app.get("/api/accounting/payroll-notes")
+def list_accounting_payroll_notes(request: Request, month: str = "", viewType: str = "") -> dict[str, Any]:
+    user = current_user(request)
+    if str(user.get("role") or "") not in {"admin", "ke_toan"}:
+        raise HTTPException(status_code=403, detail="Chỉ bộ phận Kế toán được quản lý ghi chú bảng lương.")
+    if not re.fullmatch(r"\d{4}-\d{2}", month or "") or viewType not in {"travel", "cargo"}:
+        raise HTTPException(status_code=400, detail="Tháng hoặc loại bảng lương không hợp lệ.")
+    return {"sheetName": PAYROLL_NOTES_SHEET_NAME, "month": month, "viewType": viewType, "rows": list(payroll_notes_map(month, viewType).values()), "fetchedAt": now_iso()}
+
+
+@app.put("/api/accounting/payroll-notes/{employee_code}")
+def save_accounting_payroll_note(employee_code: str, payload: PayrollNoteInput, request: Request) -> dict[str, Any]:
+    user = current_user(request)
+    if str(user.get("role") or "") not in {"admin", "ke_toan"}:
+        raise HTTPException(status_code=403, detail="Chỉ bộ phận Kế toán được sửa ghi chú bảng lương.")
+    if employee_code.strip().upper() != payload.employeeCode.strip().upper():
+        raise HTTPException(status_code=400, detail="Mã nhân viên không khớp.")
+    if payroll_lock_for(payload.month, payload.viewType):
+        raise HTTPException(status_code=409, detail="Tháng đã chốt lương, không thể sửa ghi chú.")
+    code = payload.employeeCode.strip().upper()
+    existing = payroll_notes_map(payload.month, payload.viewType).get(code)
+    row = {"id": str((existing or {}).get("id") or secrets.token_hex(8)), "month": payload.month, "viewType": payload.viewType, "employeeCode": code, "note": payload.note.strip(), "updatedBy": current_user_display_name(request), "updatedAt": now_iso(), "status": "active" if payload.note.strip() else "inactive"}
+    worksheet = payroll_notes_worksheet()
+    worksheet.append_row([row.get(header, "") for header in PAYROLL_NOTE_HEADERS], value_input_option="RAW")
+    invalidate_worksheet_cache(worksheet)
+    log_action(request, "update_payroll_note", "payroll", f"{payload.viewType}:{payload.month}:{code}", after=row)
+    return {"ok": True, "row": row}
+
+
+@app.get("/api/accounting/payroll")
+def list_accounting_payroll(request: Request, month: str = "", viewType: str = "travel") -> dict[str, Any]:
+    user = current_user(request)
+    if str(user.get("role") or "") not in {"admin", "ke_toan"}:
+        raise HTTPException(status_code=403, detail="Chỉ bộ phận Kế toán được xem bảng lương.")
+    if not re.fullmatch(r"\d{4}-\d{2}", month or ""):
+        month = datetime.now().strftime("%Y-%m")
+    if viewType not in {"travel", "cargo"}:
+        raise HTTPException(status_code=400, detail="Loại bảng lương không hợp lệ.")
+    return accounting_payroll_rows(month, viewType)
+
+
+@app.post("/api/accounting/payroll-lock")
+def lock_accounting_payroll(payload: PayrollLockInput, request: Request) -> dict[str, Any]:
+    user = current_user(request)
+    if str(user.get("role") or "") not in {"admin", "ke_toan"}:
+        raise HTTPException(status_code=403, detail="Chỉ bộ phận Kế toán được chốt bảng lương.")
+    if payroll_lock_for(payload.month, payload.viewType):
+        raise HTTPException(status_code=409, detail="Bảng lương tháng này đã được chốt trước đó.")
+    snapshot = accounting_payroll_rows(payload.month, payload.viewType)
+    if payload.viewType == "travel":
+        snapshot["fuelStandard"] = fuel_standard_rows(payload.month)
+    lock_row = {
+        "month": payload.month,
+        "viewType": payload.viewType,
+        "status": "locked",
+        "lockedBy": current_user_display_name(request),
+        "lockedAt": now_iso(),
+        "payloadJson": json.dumps(snapshot, ensure_ascii=False, separators=(",", ":")),
+    }
+    worksheet = payroll_locks_worksheet()
+    worksheet.append_row([lock_row.get(header, "") for header in PAYROLL_LOCK_HEADERS], value_input_option="RAW")
+    invalidate_worksheet_cache(worksheet)
+    log_action(request, "lock_payroll", "payroll", f"{payload.viewType}:{payload.month}", after={key: value for key, value in lock_row.items() if key != "payloadJson"})
+    snapshot["locked"] = True
+    snapshot["lockedBy"] = lock_row["lockedBy"]
+    snapshot["lockedAt"] = lock_row["lockedAt"]
+    return {"ok": True, "lock": {key: value for key, value in lock_row.items() if key != "payloadJson"}, "payroll": snapshot}
+
+
+def _payroll_driver_code(row: dict[str, Any]) -> str:
+    code = str(row.get("maNVLaiXe") or "").strip().upper()
+    if code:
+        return code
+    match = re.search(r"-\s*([A-Za-z]{2}\d+)\s*$", str(row.get("hoTenLaiXe") or "").strip())
+    return match.group(1).upper() if match else ""
+
+
+def _safe_payroll_filename(value: Any) -> str:
+    text = unicodedata.normalize("NFKD", str(value or ""))
+    text = "".join(character for character in text if not unicodedata.combining(character))
+    text = re.sub(r"[^A-Za-z0-9._-]+", "-", text).strip("-._")
+    return text or "tai-xe"
+
+
+def _payroll_detail_sources(month: str, view_type: str, payroll_rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """Prepare the per-driver evidence used by individual payroll workbooks."""
+    year, month_number = (int(part) for part in month.split("-"))
+    next_month = datetime(year + (month_number == 12), 1 if month_number == 12 else month_number + 1, 1)
+    day_count = (next_month - timedelta(days=1)).day
+    employee_codes = {
+        str(row.get("employeeCode") or "").strip().upper()
+        for row in payroll_rows
+        if str(row.get("employeeCode") or "").strip()
+    }
+    with ThreadPoolExecutor(max_workers=5, thread_name_prefix="payslip-detail") as executor:
+        roster_future = executor.submit(roster_rows)
+        overrides_future = executor.submit(
+            lambda: worksheet_records(attendance_overrides_worksheet(), ATTENDANCE_OVERRIDE_HEADERS)
+        )
+        orders_future = executor.submit(all_order_records) if view_type == "travel" else None
+        fuel_future = executor.submit(active_fuel_records) if view_type == "travel" else None
+        wash_future = executor.submit(active_car_wash_records) if view_type == "travel" else None
+        roster_sources = roster_future.result()
+        override_sources = overrides_future.result()
+        order_sources = orders_future.result() if orders_future else []
+        fuel_sources = fuel_future.result() if fuel_future else []
+        wash_sources = wash_future.result() if wash_future else []
+
+    attendance_events: dict[str, str] = {}
+    overtime_events: dict[str, dict[str, Any]] = {}
+    for source in roster_sources:
+        event_date = parse_roster_date(source.get("thoiGianTao"))
+        if event_date == datetime.min or event_date.strftime("%Y-%m") != month:
+            continue
+        is_cargo = "taivan945kg" in normalize_text(source.get("so_cho")).replace(" ", "")
+        if (view_type == "cargo") != is_cargo:
+            continue
+        driver_text = str(source.get("hoTenMSNVLaiXe") or "").strip()
+        code_match = re.search(r"-\s*([A-Za-z]{2}\d+)\s*$", driver_text)
+        if not code_match:
+            continue
+        code = code_match.group(1).upper()
+        if code not in employee_codes:
+            continue
+        status = normalize_text(source.get("trangThaiLenXuongCa"))
+        key = f"{code}:{event_date.day}"
+        if view_type == "travel":
+            attendance_events[key] = "O" if "xuong ca" in status else "X"
+        elif "len ca" in status:
+            attendance_events[key] = "X"
+            overtime_events[key] = source
+        elif key not in attendance_events:
+            attendance_events[key] = "KL"
+
+    attendance_overrides: dict[str, str] = {}
+    for source in override_sources:
+        if str(source.get("month") or "").strip() != month or str(source.get("viewType") or "").strip() != view_type:
+            continue
+        code = str(source.get("employeeCode") or "").strip().upper()
+        day = str(source.get("day") or "").strip()
+        mark = str(source.get("mark") or "").strip().upper()
+        if code in employee_codes and day and mark in {"X", "O", "KL"}:
+            attendance_overrides[f"{code}:{day}"] = mark
+
+    weekday_labels = ["Thứ Hai", "Thứ Ba", "Thứ Tư", "Thứ Năm", "Thứ Sáu", "Thứ Bảy", "Chủ Nhật"]
+    attendance_by_driver: dict[str, list[dict[str, Any]]] = {}
+    attendance_labels = {"X": "Có đi làm", "O": "Nghỉ có lương", "KL": "Nghỉ không lương"}
+    for code in employee_codes:
+        rows = []
+        for day in range(1, day_count + 1):
+            work_date = datetime(year, month_number, day)
+            mark = attendance_overrides.get(f"{code}:{day}") or attendance_events.get(f"{code}:{day}") or "KL"
+            overtime_minutes = rounded_payroll_overtime_minutes((overtime_events.get(f"{code}:{day}") or {}).get("soGioTangCa")) if view_type == "cargo" and mark == "X" else 0
+            rows.append({
+                "date": work_date,
+                "weekday": weekday_labels[work_date.weekday()],
+                "mark": mark,
+                "status": attendance_labels[mark],
+                "workDay": 1 if mark == "X" else 0,
+                "overtimeMinutes": overtime_minutes,
+                "overtimePay": round(overtime_minutes / 60 * 30_000) if view_type == "cargo" else 0,
+                "source": "Điều chỉnh kế toán" if f"{code}:{day}" in attendance_overrides else "Danh sách lên ca",
+            })
+        attendance_by_driver[code] = rows
+
+    revenue_by_driver: dict[str, list[dict[str, Any]]] = {code: [] for code in employee_codes}
+    for order in order_sources:
+        departure = parse_existing_datetime(order.get("ngayGioDi")) or parse_existing_datetime(order.get("createdAt"))
+        code = _payroll_driver_code(order)
+        if not departure or departure.strftime("%Y-%m") != month or code not in employee_codes:
+            continue
+        pickup = str(order.get("diemDon") or "").strip()
+        dropoff = str(order.get("diemTra") or "").strip()
+        route = str(order.get("tuyen") or "").strip() or (f"{pickup} - {dropoff}" if pickup and dropoff else pickup or dropoff)
+        revenue_by_driver[code].append({
+            "departure": departure,
+            "orderId": str(order.get("id") or ""),
+            "customer": str(order.get("tenKhach") or ""),
+            "route": route,
+            "plate": str(order.get("bienKiemSoat") or ""),
+            "gross": money_value(order.get("giaTien")),
+            "surcharge": money_value(order.get("phuThu")),
+            "discount": money_value(order.get("giamGia")),
+            "benefit": money_value(order.get("tongUuDai")),
+            "revenue": order_driver_revenue(order),
+            "status": str(order.get("trangThai") or ""),
+        })
+    for rows in revenue_by_driver.values():
+        rows.sort(key=lambda row: (row["departure"], row["orderId"]))
+
+    fuel_by_driver: dict[str, list[dict[str, Any]]] = {code: [] for code in employee_codes}
+    for source in fuel_sources:
+        code = str(source.get("employeeCode") or "").strip().upper()
+        fuel_date = parse_existing_date(source.get("ngay"))
+        if code not in employee_codes or not fuel_date or fuel_date.strftime("%Y-%m") != month:
+            continue
+        liters = max(0.0, float(source.get("soLit") or 0))
+        price = max(0.0, float(source.get("donGiaLit") or 0))
+        fuel_by_driver[code].append({
+            "date": fuel_date,
+            "plate": str(source.get("bienKiemSoat") or ""),
+            "fuelType": str(source.get("loaiNhienLieu") or ""),
+            "liters": liters,
+            "price": price,
+            "amount": round(liters * price),
+            "odometer": max(0.0, float(source.get("soKmTaplo") or 0)),
+            "distance": max(0.0, float(source.get("soKmDaChay") or 0)),
+            "updatedBy": str(source.get("updatedBy") or source.get("createdBy") or ""),
+        })
+    for rows in fuel_by_driver.values():
+        rows.sort(key=lambda row: (row["date"], row["odometer"]))
+
+    wash_by_driver: dict[str, list[dict[str, Any]]] = {code: [] for code in employee_codes}
+    for source in wash_sources:
+        code = str(source.get("employeeCode") or "").strip().upper()
+        wash_date = parse_existing_date(source.get("ngay"))
+        if code not in employee_codes or not wash_date or wash_date.strftime("%Y-%m") != month:
+            continue
+        wash_by_driver[code].append({
+            "date": wash_date,
+            "plate": str(source.get("bienKiemSoat") or ""),
+            "count": 1,
+            "status": "Đã rửa",
+            "confirmedBy": str(source.get("updatedBy") or source.get("createdBy") or ""),
+            "confirmedAt": parse_existing_datetime(source.get("updatedAt") or source.get("createdAt")),
+            "note": str(source.get("ghiChu") or ""),
+        })
+    for rows in wash_by_driver.values():
+        rows.sort(key=lambda row: (row["date"], row.get("confirmedAt") or datetime.min))
+
+    fuel_standard = fuel_standard_rows(month) if view_type == "travel" else {"month": month, "rows": []}
+    fuel_standard_by_driver = {
+        str(row.get("employeeCode") or "").strip().upper(): row
+        for row in fuel_standard.get("rows", [])
+    }
+    return {
+        "attendance": attendance_by_driver,
+        "revenue": revenue_by_driver,
+        "fuel": fuel_by_driver,
+        "wash": wash_by_driver,
+        "fuelStandard": fuel_standard,
+        "fuelStandardByDriver": fuel_standard_by_driver,
+    }
+
+
+def _style_payslip_detail_sheet(sheet: Any, title: str, subtitle: str, headers: list[str], widths: list[float]) -> None:
+    from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+    from openpyxl.utils import get_column_letter
+
+    dark_teal = "0B5963"
+    light_teal = "DDEFF0"
+    text_color = "12343B"
+    separator = Side(style="thin", color="CBD5E1")
+    sheet.sheet_view.showGridLines = False
+    sheet.freeze_panes = "A5"
+    sheet.merge_cells(start_row=1, start_column=1, end_row=1, end_column=len(headers))
+    title_cell = sheet.cell(1, 1, title)
+    title_cell.font = Font(name="Arial", size=14, bold=True, color=text_color)
+    title_cell.alignment = Alignment(horizontal="left", vertical="center")
+    sheet.row_dimensions[1].height = 25
+    sheet.merge_cells(start_row=2, start_column=1, end_row=2, end_column=len(headers))
+    subtitle_cell = sheet.cell(2, 1, subtitle)
+    subtitle_cell.font = Font(name="Arial", size=10, italic=True, color="5E7480")
+    subtitle_cell.alignment = Alignment(horizontal="left", vertical="center")
+    for column, header in enumerate(headers, 1):
+        cell = sheet.cell(4, column, header)
+        cell.font = Font(name="Arial", size=10, bold=True, color="FFFFFF")
+        cell.fill = PatternFill("solid", fgColor=dark_teal)
+        cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+        cell.border = Border(right=Side(style="thin", color="FFFFFF"), bottom=separator)
+        sheet.column_dimensions[get_column_letter(column)].width = widths[column - 1]
+    sheet.row_dimensions[4].height = 34
+    sheet.auto_filter.ref = f"A4:{get_column_letter(len(headers))}4"
+    sheet.page_setup.orientation = "landscape"
+    sheet.page_setup.fitToWidth = 1
+    sheet.page_setup.fitToHeight = 0
+    sheet.sheet_properties.pageSetUpPr.fitToPage = True
+    sheet.print_title_rows = "1:4"
+    sheet.sheet_properties.tabColor = light_teal
+
+
+def _finish_payslip_detail_sheet(sheet: Any, row_count: int, column_count: int) -> None:
+    from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+    from openpyxl.utils import get_column_letter
+
+    separator = Side(style="thin", color="D8E3E8")
+    if row_count <= 0:
+        sheet.merge_cells(start_row=5, start_column=1, end_row=5, end_column=column_count)
+        cell = sheet.cell(5, 1, "Không có dữ liệu trong tháng này.")
+        cell.font = Font(name="Arial", size=10, italic=True, color="64748B")
+        cell.fill = PatternFill("solid", fgColor="F8FAFC")
+        cell.alignment = Alignment(horizontal="left", vertical="center")
+        sheet.row_dimensions[5].height = 24
+        return
+    last_row = 4 + row_count
+    for row in sheet.iter_rows(min_row=5, max_row=last_row, min_col=1, max_col=column_count):
+        for cell in row:
+            cell.font = Font(name="Arial", size=10, color="12343B")
+            cell.alignment = Alignment(vertical="center", wrap_text=True)
+            cell.border = Border(bottom=separator)
+        sheet.row_dimensions[row[0].row].height = 22
+    sheet.auto_filter.ref = f"A4:{get_column_letter(column_count)}{last_row}"
+
+
+def _append_payslip_total_row(
+    sheet: Any,
+    row_count: int,
+    column_count: int,
+    label: str,
+    label_column: int,
+    values: dict[int, Any],
+    number_formats: dict[int, str] | None = None,
+) -> None:
+    if row_count <= 0:
+        return
+    from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+
+    total_row = 5 + row_count
+    top_border = Side(style="medium", color="0B5963")
+    for column in range(1, column_count + 1):
+        cell = sheet.cell(total_row, column)
+        cell.fill = PatternFill("solid", fgColor="DDF5ED")
+        cell.font = Font(name="Arial", size=10, bold=True, color="12343B")
+        cell.border = Border(top=top_border)
+        cell.alignment = Alignment(vertical="center", wrap_text=True)
+    sheet.cell(total_row, label_column, label)
+    for column, value in values.items():
+        sheet.cell(total_row, column, value)
+    for column, number_format in (number_formats or {}).items():
+        sheet.cell(total_row, column).number_format = number_format
+    sheet.row_dimensions[total_row].height = 24
+
+
+def _build_driver_payslip_workbook(
+    month: str,
+    payroll_payload: dict[str, Any],
+    driver: dict[str, Any],
+    detail_sources: dict[str, Any],
+) -> bytes:
+    try:
+        from openpyxl import Workbook
+        from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+    except ImportError as exc:
+        raise HTTPException(status_code=500, detail="Thiếu thư viện xuất Excel.") from exc
+
+    year, month_number = (int(part) for part in month.split("-"))
+    view_type = str(payroll_payload.get("viewType") or "travel")
+    is_cargo = view_type == "cargo"
+    group_label = "Xe Hàng" if is_cargo else "Lái xe Travel"
+    code = str(driver.get("employeeCode") or "").strip().upper()
+    name = str(driver.get("employeeName") or code)
+    period_label = f"Tháng {month_number:02d}/{year}"
+    workbook = Workbook()
+    workbook.properties.creator = "Đi Xanh Finance"
+    workbook.properties.title = f"Phiếu lương chi tiết {name} {period_label}"
+    workbook.calculation.fullCalcOnLoad = True
+    workbook.calculation.forceFullCalc = True
+
+    dark_teal = "0B5963"
+    light_teal = "DDEFF0"
+    pale_green = "DDF5ED"
+    pale_amber = "FFF4D6"
+    text_color = "12343B"
+    muted = "64748B"
+    separator = Side(style="thin", color="CBD5E1")
+    money_format = '#,##0;[Red](#,##0);-'
+    decimal_format = '#,##0.00;[Red](#,##0.00);-'
+
+    summary = workbook.active
+    summary.title = "Phiếu lương"
+    summary.sheet_view.showGridLines = False
+    summary.sheet_properties.tabColor = dark_teal
+    summary.merge_cells("A2:D2")
+    title_cell = summary["A2"]
+    title_cell.value = f"PHIẾU LƯƠNG CHI TIẾT {group_label.upper()}"
+    title_cell.font = Font(name="Arial", size=16, bold=True, color=text_color)
+    title_cell.alignment = Alignment(horizontal="left", vertical="center")
+    summary.row_dimensions[2].height = 28
+    summary.merge_cells("A3:D3")
+    summary["A3"] = f"{period_label} · Xuất từ hệ thống kế toán Đi Xanh"
+    summary["A3"].font = Font(name="Arial", size=10, italic=True, color=muted)
+    summary["A3"].border = Border(bottom=separator)
+    summary["A5"], summary["B5"], summary["C5"], summary["D5"] = "Họ và tên", name, "Mã nhân viên", code
+    summary["A6"], summary["B6"], summary["C6"], summary["D6"] = "Nhóm tài xế", group_label, "Trạng thái bảng lương", "Đã chốt" if payroll_payload.get("locked") else "Chưa chốt"
+    for row_number in (5, 6):
+        for column in (1, 3):
+            summary.cell(row_number, column).font = Font(name="Arial", size=10, bold=True, color=muted)
+        for column in (2, 4):
+            summary.cell(row_number, column).font = Font(name="Arial", size=10, bold=True, color=text_color)
+
+    current_row = 8
+
+    def section(title: str) -> None:
+        nonlocal current_row
+        summary.merge_cells(start_row=current_row, start_column=1, end_row=current_row, end_column=4)
+        cell = summary.cell(current_row, 1, title)
+        cell.fill = PatternFill("solid", fgColor=light_teal)
+        cell.font = Font(name="Arial", size=10, bold=True, color=text_color)
+        cell.alignment = Alignment(vertical="center")
+        cell.border = Border(bottom=separator)
+        summary.row_dimensions[current_row].height = 23
+        current_row += 1
+
+    def metric(label: str, value: Any, unit: str = "VNĐ", fill: str = "") -> int:
+        nonlocal current_row
+        summary.cell(current_row, 1, label)
+        summary.cell(current_row, 2, value)
+        summary.cell(current_row, 3, unit)
+        summary.merge_cells(start_row=current_row, start_column=3, end_row=current_row, end_column=4)
+        summary.cell(current_row, 1).font = Font(name="Arial", size=10, color=text_color)
+        summary.cell(current_row, 2).font = Font(name="Arial", size=10, bold=True, color=text_color)
+        summary.cell(current_row, 2).number_format = money_format if unit == "VNĐ" else '#,##0.00' if unit == "giờ" else '#,##0'
+        summary.cell(current_row, 3).font = Font(name="Arial", size=10, italic=True, color=muted)
+        if fill:
+            for column in range(1, 5):
+                summary.cell(current_row, column).fill = PatternFill("solid", fgColor=fill)
+        for column in range(1, 5):
+            summary.cell(current_row, column).border = Border(bottom=Side(style="thin", color="E2E8F0"))
+            summary.cell(current_row, column).alignment = Alignment(vertical="center")
+        summary.row_dimensions[current_row].height = 22
+        written_row = current_row
+        current_row += 1
+        return written_row
+
+    section("NGÀY CÔNG")
+    metric("Số ngày công chuẩn", driver.get("requiredDays", 0), "ngày")
+    metric("Số ngày công đi làm", driver.get("workDays", 0), "ngày")
+
+    section("THU NHẬP")
+    metric("Lương cơ bản", driver.get("baseSalary", 0))
+    for allowance in driver.get("allowances") or []:
+        metric(f"Phụ cấp: {str(allowance.get('type') or 'Khác')}", allowance.get("amount", 0))
+    metric("Tổng phụ cấp", driver.get("totalAllowance", 0))
+    if is_cargo:
+        metric("Giờ tăng ca", round(float(driver.get("overtimeMinutes") or 0) / 60, 2), "giờ")
+        metric("Tiền tăng ca", driver.get("overtimePay", 0))
+    metric("Thưởng đủ công", driver.get("attendanceBonus", 0))
+    if not is_cargo:
+        metric("Doanh thu tháng", driver.get("travelRevenue", 0))
+        metric(f"Thưởng doanh thu {payroll_payload.get('travelRevenueBonusRate', 10)}%", driver.get("travelRevenueBonus", 0))
+    metric("Lương gộp", driver.get("grossSalary", 0), fill=pale_green)
+
+    section("KHOẢN TRỪ VÀ ĐIỀU CHỈNH")
+    deductions = driver.get("deductions") or []
+    if deductions:
+        for deduction in deductions:
+            label = f"Khoản trừ: {str(deduction.get('type') or 'Khoản trừ')}"
+            note = str(deduction.get("note") or "").strip()
+            if note:
+                label = f"{label} ({note})"
+            metric(label, deduction.get("amount", 0))
+    else:
+        metric("Các khoản trừ đã khai báo", 0)
+    metric("Tổng khoản trừ", driver.get("totalDeduction", 0), fill=pale_amber)
+    if not is_cargo:
+        metric("Thu vượt định mức xăng", driver.get("fuelOveruseCharge", 0), fill=pale_amber)
+        metric("Cộng thưởng tiết kiệm xăng", driver.get("fuelSavingBonus", 0), fill=pale_green)
+    net_row = metric("TỔNG LƯƠNG THỰC NHẬN", driver.get("totalSalary", 0), fill=dark_teal)
+    for column in range(1, 5):
+        summary.cell(net_row, column).font = Font(name="Arial", size=11, bold=True, color="FFFFFF")
+    summary.row_dimensions[net_row].height = 27
+
+    current_row += 1
+    summary.merge_cells(start_row=current_row, start_column=1, end_row=current_row, end_column=4)
+    formula_note = "Công thức: Lương gộp - Tổng khoản trừ." if is_cargo else "Công thức: Lương gộp - Tổng khoản trừ - Thu vượt định mức + Thưởng tiết kiệm xăng."
+    summary.cell(current_row, 1, formula_note)
+    summary.cell(current_row, 1).font = Font(name="Arial", size=10, italic=True, color=muted)
+    summary.cell(current_row, 1).alignment = Alignment(wrap_text=True)
+    current_row += 2
+    section("THÔNG TIN BỔ SUNG")
+    note = str(driver.get("payrollNote") or "").strip()
+    metric("Ghi chú", note or "Không có", "")
+    metric("Ngân hàng", str(driver.get("bankName") or "Không khai báo"), "")
+    metric("Số tài khoản", str(driver.get("accountNumber") or "Không khai báo"), "")
+    metric("Chủ tài khoản", str(driver.get("accountHolder") or "Không khai báo"), "")
+
+    summary.column_dimensions["A"].width = 42
+    summary.column_dimensions["B"].width = 22
+    summary.column_dimensions["C"].width = 20
+    summary.column_dimensions["D"].width = 18
+    summary.freeze_panes = "A5"
+    summary.page_setup.orientation = "portrait"
+    summary.page_setup.fitToWidth = 1
+    summary.page_setup.fitToHeight = 1
+    summary.sheet_properties.pageSetUpPr.fitToPage = True
+    summary.print_area = f"A1:D{current_row}"
+
+    attendance_rows = detail_sources["attendance"].get(code, [])
+    attendance = workbook.create_sheet("Chấm công")
+    attendance_headers = ["STT", "Ngày", "Thứ", "Dấu công", "Diễn giải", "Công tính lương"]
+    attendance_widths = [7, 14, 13, 12, 22, 18]
+    if is_cargo:
+        attendance_headers += ["Giờ tăng ca", "Tiền tăng ca"]
+        attendance_widths += [16, 17]
+    attendance_headers += ["Nguồn"]
+    attendance_widths += [22]
+    _style_payslip_detail_sheet(attendance, f"CHẤM CÔNG · {name}", period_label, attendance_headers, attendance_widths)
+    for index, item in enumerate(attendance_rows, 1):
+        values = [index, item["date"], item["weekday"], item["mark"], item["status"], item["workDay"]]
+        if is_cargo:
+            values += [item["overtimeMinutes"] / 1440, item["overtimePay"]]
+        values += [item["source"]]
+        for column, value in enumerate(values, 1):
+            attendance.cell(index + 4, column, value)
+        attendance.cell(index + 4, 2).number_format = "dd/mm/yyyy"
+        if is_cargo:
+            attendance.cell(index + 4, 7).number_format = "[h]:mm"
+            attendance.cell(index + 4, 8).number_format = money_format
+    _finish_payslip_detail_sheet(attendance, len(attendance_rows), len(attendance_headers))
+    _append_payslip_total_row(
+        attendance,
+        len(attendance_rows),
+        len(attendance_headers),
+        "Tổng số ngày công đi làm",
+        5,
+        {6: sum(item["workDay"] for item in attendance_rows)},
+        {6: '#,##0'},
+    )
+
+    if is_cargo:
+        total_row = 5 + len(attendance_rows)
+        if attendance_rows:
+            attendance.cell(total_row, 7, sum(item["overtimeMinutes"] for item in attendance_rows) / 1440)
+            attendance.cell(total_row, 7).number_format = "[h]:mm"
+            attendance.cell(total_row, 8, sum(item["overtimePay"] for item in attendance_rows))
+            attendance.cell(total_row, 8).number_format = money_format
+        output = BytesIO()
+        workbook.save(output)
+        output.seek(0)
+        return output.getvalue()
+
+    revenue_rows = detail_sources["revenue"].get(code, [])
+    revenue = workbook.create_sheet("Doanh thu theo ngày")
+    revenue_headers = ["STT", "Ngày giờ đi", "Mã đơn", "Khách hàng", "Tuyến", "BSX", "Giá chuyến", "Phụ thu", "Giảm giá", "Ưu đãi", "Doanh thu tính thưởng", "Trạng thái"]
+    _style_payslip_detail_sheet(revenue, f"DOANH THU THEO NGÀY · {name}", f"{period_label} · Tổng doanh thu tính thưởng {round(driver.get('travelRevenue', 0)):,} VNĐ", revenue_headers, [7, 19, 24, 22, 34, 14, 16, 14, 14, 14, 22, 18])
+    for index, item in enumerate(revenue_rows, 1):
+        values = [index, item["departure"], item["orderId"], item["customer"], item["route"], item["plate"], item["gross"], item["surcharge"], item["discount"], item["benefit"], item["revenue"], item["status"]]
+        for column, value in enumerate(values, 1):
+            revenue.cell(index + 4, column, value)
+        revenue.cell(index + 4, 2).number_format = "dd/mm/yyyy hh:mm"
+        for column in range(7, 12):
+            revenue.cell(index + 4, column).number_format = money_format
+    _finish_payslip_detail_sheet(revenue, len(revenue_rows), len(revenue_headers))
+    _append_payslip_total_row(
+        revenue,
+        len(revenue_rows),
+        len(revenue_headers),
+        "Tổng cộng",
+        6,
+        {
+            7: sum(item["gross"] for item in revenue_rows),
+            8: sum(item["surcharge"] for item in revenue_rows),
+            9: sum(item["discount"] for item in revenue_rows),
+            10: sum(item["benefit"] for item in revenue_rows),
+            11: sum(item["revenue"] for item in revenue_rows),
+        },
+        {column: money_format for column in range(7, 12)},
+    )
+
+    fuel_rows = detail_sources["fuel"].get(code, [])
+    fuel = workbook.create_sheet("Đổ xăng theo ngày")
+    fuel_headers = ["STT", "Ngày", "BSX", "Loại nhiên liệu", "Số lít", "Đơn giá/lít", "Thành tiền", "Km taplo", "Km đi được", "Người cập nhật"]
+    _style_payslip_detail_sheet(fuel, f"CHI TIẾT ĐỔ XĂNG · {name}", period_label, fuel_headers, [7, 14, 15, 24, 13, 17, 17, 15, 16, 22])
+    for index, item in enumerate(fuel_rows, 1):
+        values = [index, item["date"], item["plate"], item["fuelType"], item["liters"], item["price"], item["amount"], item["odometer"], item["distance"], item["updatedBy"]]
+        for column, value in enumerate(values, 1):
+            fuel.cell(index + 4, column, value)
+        fuel.cell(index + 4, 2).number_format = "dd/mm/yyyy"
+        fuel.cell(index + 4, 5).number_format = decimal_format
+        fuel.cell(index + 4, 6).number_format = money_format
+        fuel.cell(index + 4, 7).number_format = money_format
+        fuel.cell(index + 4, 8).number_format = decimal_format
+        fuel.cell(index + 4, 9).number_format = decimal_format
+    _finish_payslip_detail_sheet(fuel, len(fuel_rows), len(fuel_headers))
+    _append_payslip_total_row(
+        fuel,
+        len(fuel_rows),
+        len(fuel_headers),
+        "Tổng cộng",
+        4,
+        {
+            5: sum(item["liters"] for item in fuel_rows),
+            7: sum(item["amount"] for item in fuel_rows),
+            9: sum(item["distance"] for item in fuel_rows),
+        },
+        {5: decimal_format, 7: money_format, 9: decimal_format},
+    )
+
+    standard_source = detail_sources["fuelStandardByDriver"].get(code, {})
+    fuel_standard_payload = detail_sources["fuelStandard"]
+    standard = workbook.create_sheet("Định mức xăng")
+    standard.sheet_view.showGridLines = False
+    standard.sheet_properties.tabColor = light_teal
+    standard.merge_cells("A2:D2")
+    standard["A2"] = f"ĐỊNH MỨC XĂNG · {name}"
+    standard["A2"].font = Font(name="Arial", size=14, bold=True, color=text_color)
+    standard.merge_cells("A3:D3")
+    standard["A3"] = f"{period_label} · Định mức chuẩn {float(standard_source.get('standardRate') or FUEL_STANDARD_RATE):.3f} lít/km"
+    standard["A3"].font = Font(name="Arial", size=10, italic=True, color=muted)
+    standard["A3"].border = Border(bottom=separator)
+    standard_values = [
+        ("Tổng km đã chạy", float(standard_source.get("totalKm") or 0), "km"),
+        ("Số lít theo định mức", float(standard_source.get("standardLit") or 0), "lít"),
+        ("Số lít thực tế đã đổ", float(standard_source.get("totalLit") or 0), "lít"),
+        ("Chênh lệch thực tế - định mức", float(standard_source.get("differenceLit") or 0), "lít"),
+        ("Số lít vượt được miễn thu", FUEL_OVERUSE_FREE_LIT, "lít"),
+        ("Số lít bị truy thu", float(standard_source.get("overuseLit") or 0), "lít"),
+        ("Giá xăng áp dụng", float(fuel_standard_payload.get("price") or 0), "VNĐ/lít"),
+        ("Thu vượt định mức", float(standard_source.get("overuseCharge") or 0), "VNĐ"),
+        ("Số lít tiết kiệm", float(standard_source.get("savingLit") or 0), "lít"),
+        ("Ngưỡng thưởng tiết kiệm", FUEL_SAVING_THRESHOLD_LIT, "lít"),
+        ("Thưởng tiết kiệm xăng", float(standard_source.get("savingBonus") or 0), "VNĐ"),
+    ]
+    standard["A5"], standard["B5"], standard["C5"] = "Chỉ tiêu", "Giá trị", "Đơn vị"
+    for column in range(1, 4):
+        cell = standard.cell(5, column)
+        cell.fill = PatternFill("solid", fgColor=dark_teal)
+        cell.font = Font(name="Arial", size=10, bold=True, color="FFFFFF")
+        cell.alignment = Alignment(horizontal="center", vertical="center")
+    for index, (label, value, unit) in enumerate(standard_values, 6):
+        standard.cell(index, 1, label)
+        standard.cell(index, 2, value)
+        standard.cell(index, 3, unit)
+        standard.cell(index, 2).number_format = money_format if unit.startswith("VNĐ") else decimal_format
+        for column in range(1, 4):
+            standard.cell(index, column).font = Font(name="Arial", size=10, color=text_color)
+            standard.cell(index, column).border = Border(bottom=Side(style="thin", color="E2E8F0"))
+            standard.cell(index, column).alignment = Alignment(vertical="center")
+    note_row = 6 + len(standard_values) + 1
+    standard.merge_cells(start_row=note_row, start_column=1, end_row=note_row, end_column=4)
+    price_note = "Giá xăng chưa được khai báo cho tháng này." if not fuel_standard_payload.get("priceDeclared") else "Thu vượt định mức chỉ tính từ lít vượt thứ 11."
+    standard.cell(note_row, 1, price_note)
+    standard.cell(note_row, 1).font = Font(name="Arial", size=10, italic=True, color=muted)
+    standard.column_dimensions["A"].width = 40
+    standard.column_dimensions["B"].width = 20
+    standard.column_dimensions["C"].width = 16
+    standard.column_dimensions["D"].width = 4
+    standard.freeze_panes = "A6"
+    standard.page_setup.fitToWidth = 1
+    standard.page_setup.fitToHeight = 1
+    standard.sheet_properties.pageSetUpPr.fitToPage = True
+
+    wash_rows = detail_sources["wash"].get(code, [])
+    wash = workbook.create_sheet("Rửa xe theo ngày")
+    wash_headers = ["STT", "Ngày", "BSX", "Số lượt rửa", "Trạng thái", "Người xác nhận", "Thời gian xác nhận", "Ghi chú"]
+    _style_payslip_detail_sheet(wash, f"RỬA XE THEO NGÀY · {name}", f"{period_label} · Tổng {sum(item['count'] for item in wash_rows)} lượt rửa", wash_headers, [7, 14, 15, 15, 16, 24, 21, 28])
+    for index, item in enumerate(wash_rows, 1):
+        values = [index, item["date"], item["plate"], item["count"], item["status"], item["confirmedBy"], item["confirmedAt"], item["note"]]
+        for column, value in enumerate(values, 1):
+            wash.cell(index + 4, column, value)
+        wash.cell(index + 4, 2).number_format = "dd/mm/yyyy"
+        wash.cell(index + 4, 7).number_format = "dd/mm/yyyy hh:mm"
+    _finish_payslip_detail_sheet(wash, len(wash_rows), len(wash_headers))
+    _append_payslip_total_row(
+        wash,
+        len(wash_rows),
+        len(wash_headers),
+        "Tổng số lượt rửa",
+        3,
+        {4: sum(item["count"] for item in wash_rows)},
+        {4: '#,##0'},
+    )
+
+    output = BytesIO()
+    workbook.save(output)
+    output.seek(0)
+    return output.getvalue()
+
+
+@app.get("/api/accounting/payroll-payslips.zip")
+def export_accounting_payroll_payslips_zip(request: Request, month: str = "", viewType: str = "travel") -> Response:
+    user = current_user(request)
+    if str(user.get("role") or "") not in {"admin", "ke_toan"}:
+        raise HTTPException(status_code=403, detail="Chỉ bộ phận Kế toán được xuất phiếu lương.")
+    if not re.fullmatch(r"\d{4}-\d{2}", month or ""):
+        raise HTTPException(status_code=400, detail="Tháng không hợp lệ.")
+    if viewType not in {"travel", "cargo"}:
+        raise HTTPException(status_code=400, detail="Loại bảng lương không hợp lệ.")
+    payroll_payload = accounting_payroll_rows(month, viewType)
+    payroll_rows = payroll_payload.get("rows") or []
+    if not payroll_rows:
+        raise HTTPException(status_code=404, detail="Không có dữ liệu lái xe để xuất phiếu lương.")
+    detail_sources = _payroll_detail_sources(month, viewType, payroll_rows)
+    archive_output = BytesIO()
+    with zipfile.ZipFile(archive_output, mode="w", compression=zipfile.ZIP_DEFLATED, compresslevel=6) as archive:
+        for driver in payroll_rows:
+            code = str(driver.get("employeeCode") or "").strip().upper()
+            name = str(driver.get("employeeName") or code)
+            workbook_bytes = _build_driver_payslip_workbook(month, payroll_payload, driver, detail_sources)
+            filename = f"{_safe_payroll_filename(code)}_{_safe_payroll_filename(name)}_{month}.xlsx"
+            archive.writestr(filename, workbook_bytes)
+    archive_output.seek(0)
+    suffix = "travel" if viewType == "travel" else "xe-hang"
+    return Response(
+        content=archive_output.getvalue(),
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="phieu-luong-chi-tiet-{suffix}-{month}.zip"'},
+    )
+
+
+@app.get("/api/accounting/payroll.xlsx")
+def export_accounting_payroll(request: Request, month: str = "", viewType: str = "travel") -> Response:
+    user = current_user(request)
+    if str(user.get("role") or "") not in {"admin", "ke_toan"}:
+        raise HTTPException(status_code=403, detail="Chỉ bộ phận Kế toán được xuất bảng lương.")
+    if not re.fullmatch(r"\d{4}-\d{2}", month or ""):
+        raise HTTPException(status_code=400, detail="Tháng không hợp lệ.")
+    if viewType not in {"travel", "cargo"}:
+        raise HTTPException(status_code=400, detail="Loại bảng lương không hợp lệ.")
+    try:
+        from openpyxl import Workbook
+        from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+        from openpyxl.utils import get_column_letter
+    except ImportError as exc:
+        raise HTTPException(status_code=500, detail="Thiếu thư viện xuất Excel.") from exc
+    payload = accounting_payroll_rows(month, viewType)
+    year, month_number = (int(part) for part in month.split("-"))
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "Bang luong Travel" if viewType == "travel" else "Bang luong Xe Hang"
+    sheet.sheet_view.showGridLines = False
+    allowance_types = []
+    deduction_types = []
+    for payroll_row in payload["rows"]:
+        payroll_allowances = payroll_row.get("allowances") or []
+        if not payroll_allowances and float(payroll_row.get("allowance") or 0) > 0:
+            payroll_allowances = [{"type": payroll_row.get("allowanceType") or "Khác", "amount": payroll_row.get("allowance")} ]
+        for allowance in payroll_allowances:
+            allowance_type = str(allowance.get("type") or "Khác").strip() or "Khác"
+            if allowance_type not in allowance_types:
+                allowance_types.append(allowance_type)
+        for deduction in payroll_row.get("deductions") or []:
+            deduction_type = str(deduction.get("type") or "Khoản trừ").strip() or "Khoản trừ"
+            if deduction_type not in deduction_types:
+                deduction_types.append(deduction_type)
+    deduction_types = order_deduction_types(deduction_types)
+    headers = ["STT", "Mã NV", "Họ và tên", "Công chuẩn", "Công thực tế", "Lương cơ bản", *allowance_types, "Tổng phụ cấp", *deduction_types, "Tổng khoản trừ"]
+    if viewType == "cargo":
+        headers += ["Giờ tăng ca", "Tiền tăng ca"]
+    if viewType == "travel":
+        headers += ["Thưởng đủ công", "Doanh thu tháng", "Thưởng doanh thu 10%", "Thưởng tiết kiệm xăng", "Thu vượt định mức", "Tổng lương", "Ngân hàng", "Số tài khoản", "Chủ tài khoản", "Ghi chú"]
+    else:
+        headers += ["Thưởng đủ công", "Tổng lương", "Ngân hàng", "Số tài khoản", "Chủ tài khoản", "Ghi chú"]
+    sheet.merge_cells(start_row=1, start_column=1, end_row=1, end_column=len(headers))
+    title = sheet.cell(1, 1, f"BẢNG LƯƠNG {'LÁI XE TRAVEL' if viewType == 'travel' else 'XE HÀNG'} THÁNG {month_number:02d}/{year}")
+    title.font = Font(bold=True, size=16, color="FFFFFF")
+    title.fill = PatternFill("solid", fgColor="0B5963")
+    title.alignment = Alignment(horizontal="center")
+    thin = Side(style="thin", color="CBD5E1")
+    border = Border(left=thin, right=thin, top=thin, bottom=thin)
+    for column, header in enumerate(headers, 1):
+        cell = sheet.cell(3, column, header)
+        cell.font = Font(bold=True, color="12343B")
+        cell.fill = PatternFill("solid", fgColor="DDEFF0")
+        cell.border = border
+        cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    for index, row in enumerate(payload["rows"], 1):
+        row_allowances = row.get("allowances") or []
+        if not row_allowances and float(row.get("allowance") or 0) > 0:
+            row_allowances = [{"type": row.get("allowanceType") or "Khác", "amount": row.get("allowance")} ]
+        allowance_by_type = {}
+        for item in row_allowances:
+            allowance_type = str(item.get("type") or "Khác").strip() or "Khác"
+            allowance_by_type[allowance_type] = allowance_by_type.get(allowance_type, 0) + round(float(item.get("amount") or 0))
+        values = [index, row["employeeCode"], row["employeeName"], row["requiredDays"], row["workDays"], row["baseSalary"]]
+        values += [allowance_by_type.get(allowance_type, 0) for allowance_type in allowance_types]
+        deduction_by_type = {}
+        for item in row.get("deductions") or []:
+            deduction_type = str(item.get("type") or "Khoản trừ").strip() or "Khoản trừ"
+            deduction_by_type[deduction_type] = deduction_by_type.get(deduction_type, 0) + round(float(item.get("amount") or 0))
+        values += [row["totalAllowance"]]
+        values += [deduction_by_type.get(deduction_type, 0) for deduction_type in deduction_types]
+        values += [row.get("totalDeduction", 0)]
+        deduction_notes = []
+        for item in row.get("deductions") or []:
+            note = str(item.get("note") or "").strip()
+            if note:
+                deduction_notes.append(f"{str(item.get('type') or 'Khoản trừ').strip()}: {note}")
+        deduction_note_text = "; ".join(deduction_notes)
+        # Khi nhập khoản trừ "Khác" trực tiếp trên bảng lương, ghi chú
+        # được lưu đồng thời ở payrollNote và deduction.note. Các nhánh bên
+        # dưới loại bỏ phần tử trùng trước khi ghép nội dung xuất Excel.
+        def combined_note_text(*parts):
+            result = []
+            for part in parts:
+                normalized = str(part or "").strip()
+                if not normalized:
+                    continue
+                folded = normalized.casefold()
+                # Nếu một phần đã nằm trong phần chi tiết hơn (ví dụ
+                # "thích thì trừ" nằm trong "Khác: thích thì trừ") thì bỏ
+                # phần ngắn để không xuất ghi chú hai lần.
+                if any(folded == existing.casefold() or folded in existing.casefold() for existing in result):
+                    continue
+                result = [existing for existing in result if existing.casefold() not in folded]
+                result.append(normalized)
+            return "; ".join(result)
+        if viewType == "cargo":
+            values += [row["overtimeMinutes"] / 1440, row["overtimePay"]]
+        if viewType == "travel":
+            salary_note = "" if row["salaryDeclared"] else "Chưa khai báo lương"
+            payroll_note = str(row.get("payrollNote") or "").strip()
+            values += [row["attendanceBonus"], row.get("travelRevenue", 0), row.get("travelRevenueBonus", 0), row.get("fuelSavingBonus", 0), row.get("fuelOveruseCharge", 0), row["totalSalary"], row["bankName"], row["accountNumber"], row["accountHolder"], combined_note_text(salary_note, deduction_note_text, payroll_note)]
+        else:
+            salary_note = "" if row["salaryDeclared"] else "Chưa khai báo lương"
+            payroll_note = str(row.get("payrollNote") or "").strip()
+            values += [row["attendanceBonus"], row["totalSalary"], row["bankName"], row["accountNumber"], row["accountHolder"], combined_note_text(salary_note, deduction_note_text, payroll_note)]
+        for column, value in enumerate(values, 1):
+            cell = sheet.cell(index + 3, column, value)
+            cell.border = border
+            cell.alignment = Alignment(vertical="center", wrap_text=True)
+            if header := headers[column - 1]:
+                if header in {"Lương cơ bản", "Tổng phụ cấp", "Tổng khoản trừ", "Tiền tăng ca", "Thưởng đủ công", "Doanh thu tháng", "Thưởng doanh thu 10%", "Thưởng tiết kiệm xăng", "Thu vượt định mức", "Tổng lương"} or header in allowance_types or header in deduction_types:
+                    cell.number_format = '#,##0'
+                elif header == "Giờ tăng ca":
+                    cell.number_format = '[h]:mm'
+        sheet.row_dimensions[index + 3].height = 24
+    widths = [6, 12, 25, 12, 12, 16] + [20] * len(allowance_types) + [16] + [20] * len(deduction_types) + [16]
+    widths += [14, 16] if viewType == "cargo" else []
+    widths += [18]
+    widths += [18, 18, 18, 18, 23, 20, 18, 18, 18] if viewType == "travel" else [18, 20, 18, 18, 18]
+    for column in range(1, len(headers) + 1):
+        sheet.column_dimensions[get_column_letter(column)].width = widths[column - 1]
+    sheet.freeze_panes = "A4"
+    sheet.auto_filter.ref = f"A3:{get_column_letter(len(headers))}{max(3, len(payload['rows']) + 3)}"
+    output = BytesIO()
+    workbook.save(output)
+    output.seek(0)
+    suffix = "travel" if viewType == "travel" else "xe-hang"
+    return Response(content=output.getvalue(), media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", headers={"Content-Disposition": f'attachment; filename="bang-luong-{suffix}-{month}.xlsx"'})
 
 
 @app.get("/api/accounting/attendance.xlsx")
