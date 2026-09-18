@@ -75,6 +75,8 @@ _SHEET_VALUES_CACHE_LOCK = threading.RLock()
 _SHEET_REFRESH_LOCKS: dict[str, threading.Lock] = {}
 _WORKSHEET_WRITE_LOCKS: dict[str, threading.Lock] = {}
 _WORKSHEET_WRITE_LOCKS_LOCK = threading.RLock()
+_ORDER_CREATE_LOCKS: dict[str, threading.Lock] = {}
+_ORDER_CREATE_LOCKS_LOCK = threading.RLock()
 _LEGACY_VALUES_CACHE: dict[str, dict[str, Any]] = {}
 _LEGACY_VALUES_CACHE_LOCK = threading.RLock()
 _LEGACY_REFRESH_LOCKS: dict[str, threading.Lock] = {}
@@ -2812,6 +2814,12 @@ def worksheet_write_lock(worksheet: Any) -> threading.Lock:
     key = str(getattr(worksheet, "id", "") or getattr(worksheet, "title", "") or id(worksheet))
     with _WORKSHEET_WRITE_LOCKS_LOCK:
         return _WORKSHEET_WRITE_LOCKS.setdefault(key, threading.Lock())
+
+
+def order_create_lock(order_id: str) -> threading.Lock:
+    """Serialize retries for the same client-generated order id."""
+    with _ORDER_CREATE_LOCKS_LOCK:
+        return _ORDER_CREATE_LOCKS.setdefault(order_id, threading.Lock())
 
 
 def append_worksheet_rows(worksheet: Any, rows: list[list[Any]]) -> None:
@@ -10435,6 +10443,18 @@ def export_orders_detail_report(tuNgay: str = "", denNgay: str = "") -> Response
 
 @app.post("/api/orders")
 def create_order(request: Request, payload: OrderInput) -> dict[str, Any]:
+    requested_order_id = str(payload.clientOrderId or "").strip().upper()
+    if requested_order_id and not re.fullmatch(r"DH-\d{8}-\d{12}-[0-9A-F]{6}", requested_order_id):
+        raise HTTPException(status_code=422, detail="Mã chống gửi trùng không hợp lệ.")
+    if not requested_order_id:
+        requested_order_id = make_id("DH")
+        payload.clientOrderId = requested_order_id
+    # Request gửi lại chỉ được chạy sau khi request đầu tiên cùng mã đã hoàn tất.
+    with order_create_lock(requested_order_id):
+        return create_order_once(request, payload)
+
+
+def create_order_once(request: Request, payload: OrderInput) -> dict[str, Any]:
     customers = customer_records()
     tours = tour_records()
     vouchers = voucher_records()
