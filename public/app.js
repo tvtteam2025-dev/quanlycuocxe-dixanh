@@ -622,6 +622,22 @@ function canOperateOrders() {
   return ["admin", "cskh"].includes(state.currentUser?.role);
 }
 
+function makeClientOrderId() {
+  const now = new Date();
+  const date = [now.getFullYear(), String(now.getMonth() + 1).padStart(2, "0"), String(now.getDate()).padStart(2, "0")].join("");
+  const time = [
+    String(now.getHours()).padStart(2, "0"),
+    String(now.getMinutes()).padStart(2, "0"),
+    String(now.getSeconds()).padStart(2, "0"),
+    String(now.getMilliseconds()).padStart(3, "0"),
+    String(Math.floor(Math.random() * 1000)).padStart(3, "0"),
+  ].join("");
+  const suffix = Array.from(crypto.getRandomValues(new Uint8Array(3)), (value) => value.toString(16).padStart(2, "0"))
+    .join("")
+    .toUpperCase();
+  return `DH-${date}-${time}-${suffix}`;
+}
+
 function isPendingReopen(row) {
   const status = normalize(row?.status || row?.trangThai);
   return status === "cho duyet" || status === "pending";
@@ -3704,6 +3720,7 @@ function loadData(view = state.activeView, force = true) {
 function openOrderDialog() {
   if (!canOperateOrders()) return;
   state.editingOrderId = "";
+  els.orderForm.dataset.clientOrderId = makeClientOrderId();
   els.orderForm.dataset.mode = "create";
   const title = els.orderForm.querySelector(".panel-title h2");
   if (title) title.textContent = "Tạo đơn hàng";
@@ -3768,6 +3785,7 @@ function openOrderEditDialog(orderId) {
     return;
   }
   state.editingOrderId = String(order.id);
+  delete els.orderForm.dataset.clientOrderId;
   els.orderForm.reset();
   els.orderForm.dataset.mode = "edit";
   const title = els.orderForm.querySelector(".panel-title h2");
@@ -5480,11 +5498,13 @@ document.querySelector("#debtToggle")?.addEventListener("change", (event) => {
 
 els.orderForm.addEventListener("submit", async (event) => {
   event.preventDefault();
+  if (els.orderForm.dataset.submitting === "true") return;
   if (!validateDateTimeInputs(els.orderForm)) {
     els.orderFormStatus.textContent = "Vui lòng nhập thời gian khởi hành dự kiến của đơn hàng.";
     els.orderForm.reportValidity();
     return;
   }
+  els.orderForm.dataset.submitting = "true";
   els.orderSubmitButton.disabled = true;
   els.orderFormStatus.textContent = "Đang lưu...";
   try {
@@ -5564,12 +5584,15 @@ els.orderForm.addEventListener("submit", async (event) => {
       payload.soDienThoai = requireCustomerPhone(payload.soDienThoai, "Số điện thoại khách hàng");
     }
     const editingOrderId = state.editingOrderId || "";
+    payload.clientOrderId = editingOrderId ? "" : (els.orderForm.dataset.clientOrderId || makeClientOrderId());
+    els.orderForm.dataset.clientOrderId = payload.clientOrderId;
     await fetchJson(editingOrderId ? `/api/orders/${encodeURIComponent(editingOrderId)}` : "/api/orders", {
       method: editingOrderId ? "PUT" : "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
     });
     state.editingOrderId = "";
+    delete els.orderForm.dataset.clientOrderId;
     els.orderForm.dataset.mode = "create";
     els.orderDialog.close();
     await loadData();
@@ -5577,6 +5600,7 @@ els.orderForm.addEventListener("submit", async (event) => {
   } catch (error) {
     els.orderFormStatus.textContent = error.message;
   } finally {
+    delete els.orderForm.dataset.submitting;
     els.orderSubmitButton.disabled = false;
   }
 });
