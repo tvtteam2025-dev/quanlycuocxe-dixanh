@@ -1043,6 +1043,7 @@ class FranchiseVehicleInput(BaseModel):
 
 
 class OrderInput(BaseModel):
+    clientOrderId: str = ""
     khachHangId: str = ""
     tenKhach: str = ""
     soDienThoai: str = ""
@@ -2758,7 +2759,9 @@ def find_row_by_id(worksheet: Any, row_id: str) -> int | None:
         id_column = headers.index("id")
     except ValueError:
         return None
-    for row_number, row in enumerate(values[1:], start=2):
+    # Dòng nằm sau cùng là bản mới nhất, đồng nhất với dữ liệu trả về giao diện.
+    for row_number in range(len(values), 1, -1):
+        row = values[row_number - 1]
         if id_column < len(row) and str(row[id_column]) == str(row_id):
             return row_number
     return None
@@ -2843,7 +2846,26 @@ def append_worksheet_rows(worksheet: Any, rows: list[list[Any]]) -> None:
 
 
 def row_by_id(rows: list[dict[str, Any]], row_id: str) -> dict[str, Any] | None:
-    return next((row for row in rows if str(row.get("id")) == str(row_id)), None)
+    return next((row for row in reversed(rows) if str(row.get("id")) == str(row_id)), None)
+
+
+def soft_delete_older_duplicate_rows(
+    worksheet: Any,
+    headers: list[str],
+    row_id: str,
+    keep_row_number: int,
+    request: Request,
+) -> None:
+    """Giữ bản ghi mới nhất và xóa mềm các bản trùng cũ của cùng một ID."""
+    values = worksheet_values(worksheet, force_refresh=True)
+    for row_number in find_rows_by_id(worksheet, row_id):
+        if row_number == keep_row_number or row_number > len(values):
+            continue
+        raw = values[row_number - 1]
+        padded = raw + [""] * max(len(headers) - len(raw), 0)
+        duplicate = {header: padded[index] for index, header in enumerate(headers)}
+        if not is_deleted_row(duplicate):
+            soft_delete_row(worksheet, row_number, headers, duplicate, request)
 
 
 def is_pending_reopen_status(value: Any) -> bool:
@@ -10482,7 +10504,14 @@ def create_order(request: Request, payload: OrderInput) -> dict[str, Any]:
     if payload.loaiHopDong == "xe_nguyen_chuyen" and payload.congNo and not payload.congNoChoAi.strip():
         raise HTTPException(status_code=422, detail="Vui lòng nhập đối tượng ghi nhận công nợ.")
 
-    order_id = make_id("DH")
+    requested_order_id = str(payload.clientOrderId or "").strip().upper()
+    if requested_order_id and not re.fullmatch(r"DH-\d{8}-\d{12}-[0-9A-F]{6}", requested_order_id):
+        raise HTTPException(status_code=422, detail="Mã chống gửi trùng không hợp lệ.")
+    order_id = requested_order_id or make_id("DH")
+    # Cùng một lần bấm lưu luôn dùng cùng clientOrderId. Nếu trình duyệt gửi lại
+    # do mất mạng/timeout, trả kết quả cũ thay vì append thêm một dòng vào Sheet.
+    if find_row_by_id(orders_worksheet(), order_id) is not None:
+        return {"ok": True, "id": order_id, "duplicate": True}
     used_voucher_ids: set[str] = set()
     benefit_rows: list[list[Any]] = []
     selected_vouchers: list[dict[str, Any]] = []
@@ -11100,6 +11129,7 @@ def assign_order_vehicle(order_id: str, payload: AssignVehicleInput, request: Re
             shared_row["ngayGioDi"] = stored_start
             shared_row["ngayGioDuKienKetThuc"] = payload.ngayGioDuKienKetThuc
             update_row_by_headers(shared_worksheet, shared_row_number, SHARED_RIDE_HEADERS, shared_row)
+        soft_delete_older_duplicate_rows(worksheet, ORDER_HEADERS, order_id, row_number, request)
         return {"ok": True, "id": order_id}
 
     roster_vehicle = roster_vehicle_by_plate(payload.bienKiemSoat, date_key(start_at))
@@ -11167,6 +11197,7 @@ def assign_order_vehicle(order_id: str, payload: AssignVehicleInput, request: Re
         shared_row["ngayGioDuKienKetThuc"] = payload.ngayGioDuKienKetThuc
         update_row_by_headers(shared_worksheet, shared_row_number, SHARED_RIDE_HEADERS, shared_row)
 
+    soft_delete_older_duplicate_rows(worksheet, ORDER_HEADERS, order_id, row_number, request)
     return {"ok": True, "id": order_id}
 
 
@@ -11178,7 +11209,7 @@ def complete_order(order_id: str, payload: CompleteOrderInput, request: Request)
         raise HTTPException(status_code=404, detail="Không tìm thấy đơn hàng.")
     order = row_by_id(worksheet_records(worksheet, ORDER_HEADERS), order_id)
     if order and order_is_done(order):
-        raise HTTPException(status_code=409, detail="ÄÆ¡n hÃ ng Ä‘Ã£ hoÃ n thÃ nh, khÃ´ng thá»ƒ thao tÃ¡c láº¡i.")
+        raise HTTPException(status_code=409, detail="Đơn hàng đã hoàn thành, không thể thao tác lại.")
     if order and not (str(order.get("bienKiemSoat") or "").strip() and str(order.get("ngayGioDi") or "").strip()):
         raise HTTPException(status_code=422, detail="Đơn hàng chưa điều xe, chưa thể hoàn thành.")
     if order and normalize_text(order.get("trangThaiGuiTaiXe")) != "da gui tai xe":
@@ -11206,6 +11237,7 @@ def complete_order(order_id: str, payload: CompleteOrderInput, request: Request)
     updated_order["trangThai"] = "Đã hoàn thành"
     updated_order["ngayGioHoanThanh"] = payload.ngayGioHoanThanh
     log_action(request, "complete_order", "order", order_id, before=order, after=updated_order)
+    soft_delete_older_duplicate_rows(worksheet, ORDER_HEADERS, order_id, row_number, request)
     return {"ok": True, "id": order_id}
 
 
@@ -11231,6 +11263,7 @@ def update_driver_notification_status(
         before=before_order,
         after=order,
     )
+    soft_delete_older_duplicate_rows(worksheet, ORDER_HEADERS, order_id, row_number, request)
     return {"ok": True, "id": order_id, "trangThaiGuiTaiXe": payload.trangThaiGuiTaiXe}
 
 
@@ -11263,6 +11296,7 @@ def update_order_remittance_status(
         order["nguoiXacNhanNopTien"] = ""
     update_row_by_headers(worksheet, row_number, ORDER_HEADERS, order)
     log_action(request, "update_remittance_status", "order", order_id, before=before, after=order)
+    soft_delete_older_duplicate_rows(worksheet, ORDER_HEADERS, order_id, row_number, request)
     return {
         "ok": True,
         "id": order_id,
