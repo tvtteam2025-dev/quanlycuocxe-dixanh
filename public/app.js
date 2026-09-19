@@ -1569,6 +1569,26 @@ function orderRouteLabel(order) {
   return order.tuyen || [order.diemDon, order.diemTra].filter(Boolean).join(" - ") || "Chưa có tuyến";
 }
 
+function splitOrderPoints(value) {
+  return String(value || "").split(/\s*(?:\||\r?\n)\s*/).map((point) => point.trim()).filter(Boolean);
+}
+
+function orderPointsForInput(value) {
+  return splitOrderPoints(value).join("\n");
+}
+
+function orderPointsForStorage(value) {
+  return splitOrderPoints(value).join(" | ");
+}
+
+function orderPointsArticle(label, value) {
+  const points = splitOrderPoints(value);
+  const content = points.length
+    ? `<ol class="route-point-list">${points.map((point) => `<li>${escapeHtml(point)}</li>`).join("")}</ol>`
+    : `<strong class="muted">Chưa có thông tin</strong>`;
+  return `<article class="route-points-article"><span>${escapeHtml(label)}</span>${content}</article>`;
+}
+
 function sumBy(rows, getter) {
   return rows.reduce((total, row) => total + Number(getter(row) || 0), 0);
 }
@@ -3838,8 +3858,8 @@ function openOrderEditDialog(orderId) {
     els.ticketCountInput.value = String(order.khachXeGhep?.length || Number(order.soVe || 0) || 1);
   }
   setOrderSelectValue(els.orderForm.elements.khuVucDatXe, order.khuVucDatXe || "");
-  els.orderPickupInput.value = order.diemDon || "";
-  els.orderDropoffInput.value = order.diemTra || "";
+  els.orderPickupInput.value = orderPointsForInput(order.diemDon);
+  els.orderDropoffInput.value = orderPointsForInput(order.diemTra);
   els.orderForm.elements.ngayGioDi.value = formatDateTime(order.ngayGioDi) || "";
   setOrderSelectValue(els.orderForm.elements.soCho, order.soCho || order.so_cho || "");
   els.orderForm.elements.giaTien.value = formatMoney(order.giaTien) || "";
@@ -3904,7 +3924,8 @@ function openAssignVehicleDialog(orderId) {
     detailArticle("Mã đơn", order.id),
     detailArticle("Khách hàng", `${order.tenKhach || "Xe ghép"}${order.soDienThoai ? ` - ${order.soDienThoai}` : ""}`),
     detailArticle("Tuyến", order.tuyen || order.loaiHopDong || ""),
-    detailArticle("Điểm đón / trả", [order.diemDon, order.diemTra].filter(Boolean).join(" - ")),
+    orderPointsArticle("Điểm đón", order.diemDon),
+    orderPointsArticle("Điểm trả", order.diemTra),
     detailArticle("Thực thu", formatMoney(orderRevenueAmount(order)) || "0"),
   ]);
   renderVehicleOptions();
@@ -3931,7 +3952,8 @@ function openCompleteDialog(orderId) {
     detailArticle("Khách hàng", `${order.tenKhach || ""}${order.soDienThoai ? ` - ${order.soDienThoai}` : ""}`),
     detailArticle("Loại đơn", order.loaiHopDong || ""),
     detailArticle("Tuyến", order.tuyen || ""),
-    detailArticle("Điểm đón / trả", `${order.diemDon || ""}${order.diemTra ? ` - ${order.diemTra}` : ""}`),
+    orderPointsArticle("Điểm đón", order.diemDon),
+    orderPointsArticle("Điểm trả", order.diemTra),
     detailArticle("Xe", order.bienKiemSoat || ""),
     detailArticle("Lái xe", `${order.hoTenLaiXe || ""}${order.maNVLaiXe ? ` - ${order.maNVLaiXe}` : ""}`),
     detailArticle("Đơn vị vận hành xe", vehicleOwnershipLabel(order)),
@@ -4306,8 +4328,8 @@ function openOrderDetails(orderId) {
     ]),
     detailSection("Hành trình", "detail-amber", [
       detailArticle("Tuyến", row.tuyen || ""),
-      detailArticle("Điểm đón", row.diemDon || ""),
-      detailArticle("Điểm trả", row.diemTra || ""),
+      orderPointsArticle("Điểm đón", row.diemDon),
+      orderPointsArticle("Điểm trả", row.diemTra),
       detailArticle("Giờ đi", formatDateTime(row.ngayGioDi)),
       detailArticle("Dự kiến kết thúc", formatDateTime(row.ngayGioDuKienKetThuc)),
       detailArticle("Hoàn thành", formatDateTime(row.ngayGioHoanThanh)),
@@ -5582,6 +5604,8 @@ els.orderForm.addEventListener("submit", async (event) => {
       payload.emailHoaDon = "";
     } else {
       payload.soDienThoai = requireCustomerPhone(payload.soDienThoai, "Số điện thoại khách hàng");
+      payload.diemDon = orderPointsForStorage(payload.diemDon);
+      payload.diemTra = orderPointsForStorage(payload.diemTra);
     }
     const editingOrderId = state.editingOrderId || "";
     payload.clientOrderId = editingOrderId ? "" : (els.orderForm.dataset.clientOrderId || makeClientOrderId());

@@ -2860,6 +2860,35 @@ select[multiple] option {
   overflow-wrap: anywhere;
 }
 
+.route-point-list {
+  display: grid;
+  gap: 7px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.route-point-list li {
+  align-items: flex-start;
+  display: grid;
+  gap: 8px;
+  grid-template-columns: 24px 1fr;
+  overflow-wrap: anywhere;
+}
+
+.route-point-list li::before {
+  align-items: center;
+  background: rgba(15, 23, 42, 0.08);
+  border-radius: 999px;
+  content: counter(list-item);
+  display: inline-flex;
+  font-size: 0.72rem;
+  font-weight: 800;
+  height: 22px;
+  justify-content: center;
+  width: 22px;
+}
+
 .detail-blue {
   background: var(--soft-blue);
   border-color: #dbe8ff;
