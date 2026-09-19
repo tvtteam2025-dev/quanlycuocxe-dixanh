@@ -1584,7 +1584,7 @@ function orderPointsForStorage(value) {
 function orderPointsArticle(label, value) {
   const points = splitOrderPoints(value);
   const content = points.length
-    ? `<ol class="route-point-list">${points.map((point) => `<li>${escapeHtml(point)}</li>`).join("")}</ol>`
+    ? `<ol class="route-point-list">${points.map((point, index) => `<li><span class="route-point-label">${escapeHtml(label)} ${index + 1}</span><strong>${escapeHtml(point)}</strong></li>`).join("")}</ol>`
     : `<strong class="muted">Chưa có thông tin</strong>`;
   return `<article class="route-points-article"><span>${escapeHtml(label)}</span>${content}</article>`;
 }
