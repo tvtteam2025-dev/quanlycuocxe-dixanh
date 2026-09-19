@@ -2328,6 +2328,12 @@ def normalize_phone(value: Any) -> str:
     return phone
 
 
+def normalize_order_points(value: Any) -> str:
+    """Store multiple pickup/drop-off points in a stable pipe-delimited format."""
+    points = [point.strip() for point in re.split(r"\s*(?:\||\r?\n)\s*", str(value or "")) if point.strip()]
+    return " | ".join(dict.fromkeys(points))
+
+
 def normalize_customer_segment(value: Any) -> str:
     normalized = normalize_text(value)
     if normalized == "b2b" or "doanh nghiep" in normalized:
@@ -10474,6 +10480,8 @@ def create_order_once(request: Request, payload: OrderInput) -> dict[str, Any]:
 
     customer: dict[str, Any]
     if payload.loaiHopDong == "xe_nguyen_chuyen":
+        payload.diemDon = normalize_order_points(payload.diemDon)
+        payload.diemTra = normalize_order_points(payload.diemTra)
         payload.soDienThoai = validate_customer_phone(payload.soDienThoai, "Số điện thoại khách hàng")
         if not payload.diemDon.strip() or not payload.diemTra.strip():
             raise HTTPException(status_code=422, detail="Vui lÃ²ng nháº­p Ä‘iá»ƒm Ä‘Ã³n vÃ  Ä‘iá»ƒm tráº£.")
@@ -10952,6 +10960,8 @@ def update_order(order_id: str, payload: OrderInput, request: Request) -> dict[s
     tour = row_by_id(tours, payload.hopDongTourId) if payload.hopDongTourId else None
     if tour is None:
         raise HTTPException(status_code=404, detail="Không tìm thấy hợp đồng/tuyến.")
+    payload.diemDon = normalize_order_points(payload.diemDon)
+    payload.diemTra = normalize_order_points(payload.diemTra)
     if not payload.diemDon.strip() or not payload.diemTra.strip():
         raise HTTPException(status_code=422, detail="Vui lòng nhập điểm đón và điểm trả.")
     if payload.giaTien <= 0:
