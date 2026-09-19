@@ -373,6 +373,9 @@ ORDER_HEADERS = [
     "ngayXacNhanNopTien",
     "nguoiXacNhanNopTien",
     "nguoiTaoDon",
+    "GiaNiemYet",
+    "updateAt",
+    "updateBy",
 ]
 
 FRANCHISE_VEHICLE_HEADERS = [
@@ -443,6 +446,7 @@ SHARED_RIDE_HEADERS = [
     "trangThai",
     "deletedAt",
     "deletedBy",
+    "GiaNiemYet",
 ]
 
 VOUCHER_HEADERS = [
@@ -1060,6 +1064,7 @@ class OrderInput(BaseModel):
     diemDon: str = ""
     diemTra: str = ""
     khuVucDatXe: str = ""
+    giaNiemYet: float = Field(default=0, ge=0)
     giaTien: float = Field(default=0, ge=0)
     giamGia: float = Field(default=0, ge=0)
     ghiChuGiamGia: str = ""
@@ -1115,6 +1120,7 @@ class SharedPassengerInput(BaseModel):
     loaiKhach: str = Field(pattern="^(B2C|B2B)$")
     diemDon: str = Field(min_length=1)
     diemTra: str = Field(min_length=1)
+    giaNiemYet: float = Field(default=0, ge=0)
     soTien: float = Field(ge=0)
     giamGia: float = Field(default=0, ge=0)
     ghiChuGiamGia: str = ""
@@ -1668,6 +1674,8 @@ def soft_delete_row(worksheet: Any, row_number: int, headers: list[str], row: di
         deleted["trangThai"] = "Đã xóa"
     if "status" in headers:
         deleted["status"] = "Đã xóa"
+    if "updateAt" in headers:
+        mark_order_updated(deleted, request)
     update_row_by_headers(worksheet, row_number, headers, deleted)
     return deleted
 
@@ -1824,6 +1832,8 @@ def all_order_records(force_refresh: bool = False) -> list[dict[str, Any]]:
     records = deduplicate_records_by_id(
         worksheet_records(orders_worksheet(), ORDER_HEADERS, force_refresh=force_refresh)
     )
+    for record in records:
+        record["giaNiemYet"] = record.get("GiaNiemYet", "")
     customers_by_id = {
         str(customer.get("id") or "").strip(): customer
         for customer in customer_records()
@@ -1841,10 +1851,15 @@ def all_order_records(force_refresh: bool = False) -> list[dict[str, Any]]:
 
 
 def all_shared_ride_records() -> list[dict[str, Any]]:
-    return deduplicate_records_by_id(worksheet_records(shared_ride_worksheet(), SHARED_RIDE_HEADERS))
+    records = deduplicate_records_by_id(worksheet_records(shared_ride_worksheet(), SHARED_RIDE_HEADERS))
+    for record in records:
+        record["giaNiemYet"] = record.get("GiaNiemYet", "")
+    return records
 
 
-def sync_customer_profile_to_current_orders(customer_id: str, before: dict[str, Any], after: dict[str, Any]) -> int:
+def sync_customer_profile_to_current_orders(
+    customer_id: str, before: dict[str, Any], after: dict[str, Any], request: Request
+) -> int:
     """Đồng bộ hồ sơ khách sang các dòng đơn hiện hành, không đụng dữ liệu nghiệp vụ."""
     updated_rows = 0
     old_phone = normalize_phone(before.get("soDienThoai"))
@@ -1858,6 +1873,7 @@ def sync_customer_profile_to_current_orders(customer_id: str, before: dict[str, 
         row["khachHangId"] = customer_id
         row["tenKhach"] = after.get("tenKhach", "")
         row["soDienThoai"] = after.get("soDienThoai", "")
+        mark_order_updated(row, request)
         update_row_by_headers(order_sheet, row_number, ORDER_HEADERS, row)
         updated_rows += 1
 
@@ -2812,6 +2828,17 @@ def update_row_by_headers(worksheet: Any, row_number: int, headers: list[str], r
     invalidate_worksheet_cache(worksheet)
 
 
+def mark_order_updated(order: dict[str, Any], request: Request) -> dict[str, Any]:
+    """Nối người và thời điểm cập nhật vào hai danh sách lịch sử song song."""
+    update_times = [value.strip() for value in str(order.get("updateAt") or "").splitlines() if value.strip()]
+    update_users = [value.strip() for value in str(order.get("updateBy") or "").splitlines() if value.strip()]
+    update_times.append(now_iso())
+    update_users.append(current_user_display_name(request))
+    order["updateAt"] = "\n".join(update_times)
+    order["updateBy"] = "\n".join(update_users)
+    return order
+
+
 def append_worksheet_row(worksheet: Any, values: list[Any]) -> None:
     append_worksheet_rows(worksheet, [values])
 
@@ -3710,6 +3737,7 @@ def approve_reopen_request(request_id: str, payload: ReopenReviewInput, request:
     updated_order = dict(order or {})
     updated_order["trangThai"] = "Chưa hoàn thành"
     updated_order["ngayGioHoanThanh"] = ""
+    mark_order_updated(updated_order, request)
     update_row_by_headers(order_worksheet, order_row_number, ORDER_HEADERS, updated_order)
 
     reopen_row["status"] = "Đã duyệt"
@@ -6179,7 +6207,7 @@ def update_customer(request: Request, customer_id: str, payload: CustomerInput) 
             duplicate["deletedAt"] = now_iso()
             duplicate["deletedBy"] = current_user_display_name(request)
             update_row_by_headers(worksheet, duplicate_row_number, CUSTOMER_HEADERS, duplicate)
-    synced_orders = sync_customer_profile_to_current_orders(customer_id, current, updated)
+    synced_orders = sync_customer_profile_to_current_orders(customer_id, current, updated, request)
     log_action(
         request,
         "update_customer",
@@ -7146,6 +7174,7 @@ def create_invoice_group(payload: InvoiceGroupInput, request: Request) -> dict[s
             "trangThaiHoaDon": "Chưa xuất",
             "ngayXuatHoaDon": "", "nguoiXuatHoaDon": "", "nhomHoaDonId": group_id,
         })
+        mark_order_updated(updated, request)
         row_number = find_row_by_id(worksheet, str(order.get("id") or ""))
         if row_number is None:
             raise HTTPException(status_code=404, detail=f"Không tìm thấy đơn {order.get('id')}.")
@@ -7197,6 +7226,7 @@ def update_invoice_group_status(group_id: str, payload: InvoiceStatusInput, requ
         order["trangThaiHoaDon"] = payload.trangThaiHoaDon
         order["ngayXuatHoaDon"] = timestamp
         order["nguoiXuatHoaDon"] = actor
+        mark_order_updated(order, request)
         update_row_by_headers(order_worksheet, row_number, ORDER_HEADERS, order)
     log_action(request, "update_invoice_group_status", "invoice_group", group_id, before=before, after=group)
     return {"ok": True, "id": group_id, "trangThaiHoaDon": payload.trangThaiHoaDon}
@@ -7293,6 +7323,8 @@ def update_debt_order_status(
     else:
         order["ngayThuHoiCongNo"] = ""
         order["nguoiThuHoiCongNo"] = ""
+    if not is_shared_passenger:
+        mark_order_updated(order, request)
     update_row_by_headers(worksheet, row_number, headers, order)
     entity_name = "shared_passenger" if is_shared_passenger else "order"
     log_action(request, "update_debt_status", entity_name, order_id, before=before, after=order)
@@ -7351,6 +7383,7 @@ def update_commission_order_status(order_id: str, payload: CommissionStatusInput
     else:
         order["ngayThuHoaHong"] = ""
         order["nguoiThuHoaHong"] = ""
+    mark_order_updated(order, request)
     update_row_by_headers(worksheet, row_number, ORDER_HEADERS, order)
     log_action(request, "update_commission_status", "order", order_id, before=before, after=order)
     return {"ok": True, "id": order_id, "trangThaiHoaHong": order["trangThaiHoaHong"]}
@@ -7395,6 +7428,7 @@ def update_invoice_status(order_id: str, payload: InvoiceStatusInput, request: R
     else:
         order["ngayXuatHoaDon"] = ""
         order["nguoiXuatHoaDon"] = ""
+    mark_order_updated(order, request)
     update_row_by_headers(worksheet, row_number, ORDER_HEADERS, order)
     log_action(request, "update_invoice_status", "order", order_id, before=before, after=order)
     return {"ok": True, "id": order_id, "trangThaiHoaDon": order["trangThaiHoaDon"]}
@@ -10694,6 +10728,10 @@ def create_order_once(request: Request, payload: OrderInput) -> dict[str, Any]:
                     passenger.phuThu,
                     passenger.lyDoPhuThu if passenger.phuThu > 0 else "",
                     passenger.loaiKhach,
+                    "",
+                    "",
+                    "",
+                    passenger.giaNiemYet,
                 ]
             )
         net_amount = max(revenue_amount + vat_amount - deposit_amount, 0)
@@ -10765,6 +10803,9 @@ def create_order_once(request: Request, payload: OrderInput) -> dict[str, Any]:
         "Công nợ" if payload.loaiHopDong == "xe_nguyen_chuyen" and payload.congNo else "",
         "",
         "",
+        current_user_display_name(request),
+        payload.giaNiemYet if payload.loaiHopDong == "xe_nguyen_chuyen" else sum(passenger.giaNiemYet for passenger in payload.khachXeGhep),
+        now_iso(),
         current_user_display_name(request),
     ]
     if len(row) != len(ORDER_HEADERS):
@@ -10888,6 +10929,7 @@ def update_shared_order(
             "Chưa thu hồi" if passenger.congNo else "", "", "",
             passenger.phuThu, passenger.lyDoPhuThu if passenger.phuThu > 0 else "",
             passenger.loaiKhach,
+            "", "", "", passenger.giaNiemYet,
         ])
 
     before = dict(order)
@@ -10907,7 +10949,9 @@ def update_shared_order(
         "thueVAT": vat_amount, "tongThanhToan": revenue_amount + vat_amount,
         "phuThu": sum(item.phuThu for item in payload.khachXeGhep),
         "lyDoPhuThu": "", "soCho": payload.soCho,
+        "GiaNiemYet": sum(item.giaNiemYet for item in payload.khachXeGhep),
     })
+    mark_order_updated(order, request)
     update_row_by_headers(worksheet, row_number, ORDER_HEADERS, order)
     for duplicate_row_number in duplicate_row_numbers or []:
         soft_delete_row(worksheet, duplicate_row_number, ORDER_HEADERS, order, request)
@@ -11035,6 +11079,7 @@ def update_order(order_id: str, payload: OrderInput, request: Request) -> dict[s
             "diemTra": payload.diemTra,
             "ngayGioDi": payload.ngayGioDi,
             "giaTien": payload.giaTien,
+            "GiaNiemYet": payload.giaNiemYet,
             "giamGia": manual_discount,
             "daCoc": deposit_amount,
             "thucThu": net_amount,
@@ -11075,6 +11120,7 @@ def update_order(order_id: str, payload: OrderInput, request: Request) -> dict[s
         order["trangThaiHoaHong"] = ""
         order["ngayThuHoaHong"] = ""
         order["nguoiThuHoaHong"] = ""
+    mark_order_updated(order, request)
     update_row_by_headers(worksheet, row_number, ORDER_HEADERS, order)
     for duplicate_row_number in row_numbers[:-1]:
         soft_delete_row(worksheet, duplicate_row_number, ORDER_HEADERS, order, request)
@@ -11145,6 +11191,7 @@ def assign_order_vehicle(order_id: str, payload: AssignVehicleInput, request: Re
         order["trangThaiHoaHong"] = ""
         order["ngayThuHoaHong"] = ""
         order["nguoiThuHoaHong"] = ""
+        mark_order_updated(order, request)
         update_row_by_headers(worksheet, row_number, ORDER_HEADERS, order)
         log_action(request, "unassign_order_vehicle", "order", order_id, before=before_order, after=order)
 
@@ -11212,6 +11259,7 @@ def assign_order_vehicle(order_id: str, payload: AssignVehicleInput, request: Re
         order["trangThaiHoaHong"] = ""
         order["ngayThuHoaHong"] = ""
         order["nguoiThuHoaHong"] = ""
+    mark_order_updated(order, request)
     update_row_by_headers(worksheet, row_number, ORDER_HEADERS, order)
     log_action(request, "assign_order_vehicle", "order", order_id, before=before_order, after=order)
 
@@ -11254,18 +11302,11 @@ def complete_order(order_id: str, payload: CompleteOrderInput, request: Request)
         raise HTTPException(status_code=422, detail="Ngày giờ hoàn thành không hợp lệ.") from exc
     if completed_at < started_at:
         raise HTTPException(status_code=422, detail="Giờ hoàn thành không được trước giờ đi.")
-    status_col = ORDER_HEADERS.index("trangThai") + 1
-    completed_col = ORDER_HEADERS.index("ngayGioHoanThanh") + 1
-    worksheet.update(gspread.utils.rowcol_to_a1(row_number, status_col), [["Đã hoàn thành"]], value_input_option="RAW")
-    worksheet.update(
-        gspread.utils.rowcol_to_a1(row_number, completed_col),
-        [[payload.ngayGioHoanThanh]],
-        value_input_option="RAW",
-    )
-    invalidate_worksheet_cache(worksheet)
     updated_order = dict(order or {})
     updated_order["trangThai"] = "Đã hoàn thành"
     updated_order["ngayGioHoanThanh"] = payload.ngayGioHoanThanh
+    mark_order_updated(updated_order, request)
+    update_row_by_headers(worksheet, row_number, ORDER_HEADERS, updated_order)
     log_action(request, "complete_order", "order", order_id, before=order, after=updated_order)
     soft_delete_older_duplicate_rows(worksheet, ORDER_HEADERS, order_id, row_number, request)
     return {"ok": True, "id": order_id}
@@ -11284,6 +11325,7 @@ def update_driver_notification_status(
         raise HTTPException(status_code=409, detail="Chỉ cập nhật trạng thái gửi tài xế cho đơn chưa hoàn thành.")
     before_order = dict(order)
     order["trangThaiGuiTaiXe"] = payload.trangThaiGuiTaiXe
+    mark_order_updated(order, request)
     update_row_by_headers(worksheet, row_number, ORDER_HEADERS, order)
     log_action(
         request,
@@ -11324,6 +11366,7 @@ def update_order_remittance_status(
     else:
         order["ngayXacNhanNopTien"] = ""
         order["nguoiXacNhanNopTien"] = ""
+    mark_order_updated(order, request)
     update_row_by_headers(worksheet, row_number, ORDER_HEADERS, order)
     log_action(request, "update_remittance_status", "order", order_id, before=before, after=order)
     soft_delete_older_duplicate_rows(worksheet, ORDER_HEADERS, order_id, row_number, request)
