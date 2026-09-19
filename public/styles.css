@@ -2871,22 +2871,21 @@ select[multiple] option {
 .route-point-list li {
   align-items: flex-start;
   display: grid;
-  gap: 8px;
-  grid-template-columns: 24px 1fr;
+  gap: 4px 10px;
+  grid-template-columns: minmax(92px, auto) 1fr;
   overflow-wrap: anywhere;
 }
 
-.route-point-list li::before {
+.route-point-label {
   align-items: center;
   background: rgba(15, 23, 42, 0.08);
-  border-radius: 999px;
-  content: counter(list-item);
+  border-radius: 7px;
   display: inline-flex;
-  font-size: 0.72rem;
+  font-size: 0.76rem;
   font-weight: 800;
-  height: 22px;
-  justify-content: center;
-  width: 22px;
+  justify-content: flex-start;
+  min-height: 22px;
+  padding: 2px 8px;
 }
 
 .detail-blue {
