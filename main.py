@@ -73,10 +73,8 @@ LEGACY_SHEET_VALUES_CACHE_TTL_SECONDS = max(
 _SHEET_VALUES_CACHE: dict[str, dict[str, Any]] = {}
 _SHEET_VALUES_CACHE_LOCK = threading.RLock()
 _SHEET_REFRESH_LOCKS: dict[str, threading.Lock] = {}
-_WORKSHEET_WRITE_LOCKS: dict[str, threading.Lock] = {}
+_WORKSHEET_WRITE_LOCKS: dict[str, threading.RLock] = {}
 _WORKSHEET_WRITE_LOCKS_LOCK = threading.RLock()
-_ORDER_CREATE_LOCKS: dict[str, threading.Lock] = {}
-_ORDER_CREATE_LOCKS_LOCK = threading.RLock()
 _LEGACY_VALUES_CACHE: dict[str, dict[str, Any]] = {}
 _LEGACY_VALUES_CACHE_LOCK = threading.RLock()
 _LEGACY_REFRESH_LOCKS: dict[str, threading.Lock] = {}
@@ -94,6 +92,7 @@ FRANCHISE_VEHICLES_SHEET_NAME = os.getenv("FRANCHISE_VEHICLES_SHEET_NAME", "XE_T
 CUSTOMERS_SHEET_NAME = os.getenv("CUSTOMERS_SHEET_NAME", "KHACH_HANG")
 TOURS_SHEET_NAME = os.getenv("TOURS_SHEET_NAME", "HOP_DONG_TOUR")
 ORDERS_SHEET_NAME = os.getenv("ORDERS_SHEET_NAME", "DON_HANG")
+ORDER_HISTORY_SHEET_NAME = os.getenv("ORDER_HISTORY_SHEET_NAME", "LICH_SU_DON_HANG")
 SHARED_RIDE_SHEET_NAME = os.getenv("SHARED_RIDE_SHEET_NAME", "KHACH_XE_GHEP")
 VOUCHERS_SHEET_NAME = os.getenv("VOUCHERS_SHEET_NAME", "VOUCHER")
 PROMOTIONS_SHEET_NAME = os.getenv("PROMOTIONS_SHEET_NAME", "CHUONG_TRINH_KHUYEN_MAI")
@@ -135,6 +134,8 @@ DEDUCTION_TYPES_SHEET_NAME = os.getenv("DEDUCTION_TYPES_SHEET_NAME", "DANH_MUC_K
 DEDUCTION_TYPE_HEADERS = ["id", "name", "status", "updatedBy", "updatedAt"]
 PAYROLL_NOTES_SHEET_NAME = os.getenv("PAYROLL_NOTES_SHEET_NAME", "GHI_CHU_BANG_LUONG")
 PAYROLL_NOTE_HEADERS = ["id", "month", "viewType", "employeeCode", "note", "updatedBy", "updatedAt", "status"]
+PAYROLL_HOLIDAYS_SHEET_NAME = os.getenv("PAYROLL_HOLIDAYS_SHEET_NAME", "NGAY_LE_TINH_LUONG")
+PAYROLL_HOLIDAY_HEADERS = ["id", "date", "name", "status", "updatedBy", "updatedAt"]
 
 ROLE_LABELS = {
     "admin": "Admin",
@@ -376,6 +377,16 @@ ORDER_HEADERS = [
     "GiaNiemYet",
     "updateAt",
     "updateBy",
+]
+
+ORDER_HISTORY_HEADERS = [
+    "historyId",
+    "orderId",
+    "snapshotAt",
+    "snapshotBy",
+    "snapshotType",
+    "sourceRow",
+    "snapshotJson",
 ]
 
 FRANCHISE_VEHICLE_HEADERS = [
@@ -888,6 +899,8 @@ def request_path_allowed_for_role(request: Request, user: dict[str, Any]) -> boo
         return role in {"admin", "ke_toan"}
     if path.startswith("/api/accounting/payroll-notes") and method in {"GET", "PUT"}:
         return role in {"admin", "ke_toan"}
+    if path.startswith("/api/accounting/payroll-holidays") and method in {"GET", "POST", "DELETE"}:
+        return role in {"admin", "ke_toan"}
     if path.startswith("/api/cskh-shift-reports"):
         if method == "GET":
             return "cskhShiftReports" in user_permissions(role, user.get("extraPermissions")).get("views", [])
@@ -1049,7 +1062,6 @@ class FranchiseVehicleInput(BaseModel):
 
 
 class OrderInput(BaseModel):
-    clientOrderId: str = ""
     khachHangId: str = ""
     tenKhach: str = ""
     soDienThoai: str = ""
@@ -1234,6 +1246,11 @@ class PayrollNoteInput(BaseModel):
     viewType: str = Field(pattern="^(travel|cargo)$")
     employeeCode: str = Field(min_length=1, max_length=30)
     note: str = Field(default="", max_length=500)
+
+
+class PayrollHolidayInput(BaseModel):
+    date: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}$")
+    name: str = Field(default="Ngày lễ", min_length=1, max_length=150)
 
 
 class FuelRecordInput(BaseModel):
@@ -1532,12 +1549,43 @@ def get_worksheet(sheet_name: str, headers: list[str]) -> Any:
             return worksheet
         _WORKSHEET_CACHE[sheet_name] = worksheet
 
-    if sheet_name not in _HEADER_CHECKED_SHEETS and worksheet.row_values(1) != headers:
+    current_headers = worksheet.row_values(1)
+    if sheet_name not in _HEADER_CHECKED_SHEETS and current_headers != headers:
+        protected_business_sheets = {
+            ORDERS_SHEET_NAME,
+            SHARED_RIDE_SHEET_NAME,
+            ORDER_HISTORY_SHEET_NAME,
+        }
+        if sheet_name in protected_business_sheets:
+            # Chỉ được phép bổ sung cột mới ở cuối. Không bao giờ đổi tên, đổi thứ
+            # tự hoặc thu hẹp cột tự động vì có thể làm mất/đảo dữ liệu nghiệp vụ.
+            if current_headers != headers[: len(current_headers)]:
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        f"Cấu trúc sheet {sheet_name} không khớp mã nguồn. "
+                        "Hệ thống đã dừng tự sửa để bảo vệ dữ liệu."
+                    ),
+                )
+            if worksheet.col_count < len(headers):
+                worksheet.resize(cols=len(headers))
+            missing_headers = headers[len(current_headers) :]
+            if missing_headers:
+                start_col = gspread.utils.rowcol_to_a1(1, len(current_headers) + 1).replace("1", "")
+                end_col = gspread.utils.rowcol_to_a1(1, len(headers)).replace("1", "")
+                worksheet.update(
+                    f"{start_col}1:{end_col}1",
+                    [missing_headers],
+                    value_input_option="RAW",
+                )
+            _HEADER_CHECKED_SHEETS.add(sheet_name)
+            return worksheet
         managed_sheet = sheet_name in {
             CUSTOMERS_SHEET_NAME,
             TOURS_SHEET_NAME,
             FRANCHISE_VEHICLES_SHEET_NAME,
             ORDERS_SHEET_NAME,
+            ORDER_HISTORY_SHEET_NAME,
             SHARED_RIDE_SHEET_NAME,
             VOUCHERS_SHEET_NAME,
             PROMOTIONS_SHEET_NAME,
@@ -1560,6 +1608,7 @@ def get_worksheet(sheet_name: str, headers: list[str]) -> Any:
             DEDUCTION_TYPES_SHEET_NAME,
             PAYROLL_DEDUCTIONS_SHEET_NAME,
             PAYROLL_NOTES_SHEET_NAME,
+            PAYROLL_HOLIDAYS_SHEET_NAME,
             CAR_WASH_SHEET_NAME,
         }
         if managed_sheet and worksheet.col_count < len(headers):
@@ -1590,6 +1639,7 @@ def worksheet_cache_ttl_seconds(key: str) -> int:
         DEDUCTION_TYPES_SHEET_NAME,
         PAYROLL_DEDUCTIONS_SHEET_NAME,
         PAYROLL_NOTES_SHEET_NAME,
+        PAYROLL_HOLIDAYS_SHEET_NAME,
         CAR_WASH_SHEET_NAME,
     }
     return LIVE_SHEET_VALUES_CACHE_TTL_SECONDS if key in live_sheet_names else SHEET_VALUES_CACHE_TTL_SECONDS
@@ -1822,6 +1872,10 @@ def orders_worksheet() -> Any:
     return get_worksheet(ORDERS_SHEET_NAME, ORDER_HEADERS)
 
 
+def order_history_worksheet() -> Any:
+    return get_worksheet(ORDER_HISTORY_SHEET_NAME, ORDER_HISTORY_HEADERS)
+
+
 def shared_ride_worksheet() -> Any:
     return get_worksheet(SHARED_RIDE_SHEET_NAME, SHARED_RIDE_HEADERS)
 
@@ -1829,9 +1883,25 @@ def shared_ride_worksheet() -> Any:
 def all_order_records(force_refresh: bool = False) -> list[dict[str, Any]]:
     # Google Sheet chính là nguồn dữ liệu duy nhất. Không ghép dữ liệu lưu trữ
     # vì một ID ở hai nguồn sẽ hiển thị thành hai chuyến sau khi chỉnh sửa.
-    records = deduplicate_records_by_id(
-        worksheet_records(orders_worksheet(), ORDER_HEADERS, force_refresh=force_refresh)
-    )
+    records = worksheet_records(orders_worksheet(), ORDER_HEADERS, force_refresh=force_refresh)
+    order_ids: set[str] = set()
+    duplicate_ids: set[str] = set()
+    for record in records:
+        order_id = str(record.get("id") or "").strip()
+        if not order_id:
+            raise HTTPException(
+                status_code=409,
+                detail="Phát hiện đơn hàng không có ID. Hệ thống đã dừng đọc để bảo vệ dữ liệu.",
+            )
+        if order_id in order_ids:
+            duplicate_ids.add(order_id)
+        order_ids.add(order_id)
+    if duplicate_ids:
+        sample = ", ".join(sorted(duplicate_ids)[:5])
+        raise HTTPException(
+            status_code=409,
+            detail=f"Phát hiện ID đơn hàng bị trùng ({sample}). Hệ thống đã khóa thao tác để tránh ghi đè dữ liệu.",
+        )
     for record in records:
         record["giaNiemYet"] = record.get("GiaNiemYet", "")
     customers_by_id = {
@@ -1948,6 +2018,24 @@ def payroll_notes_worksheet() -> Any:
     return get_worksheet(PAYROLL_NOTES_SHEET_NAME, PAYROLL_NOTE_HEADERS)
 
 
+def payroll_holidays_worksheet() -> Any:
+    return get_worksheet(PAYROLL_HOLIDAYS_SHEET_NAME, PAYROLL_HOLIDAY_HEADERS)
+
+
+def active_payroll_holidays(month: str = "") -> list[dict[str, Any]]:
+    latest: dict[str, dict[str, Any]] = {}
+    for row in worksheet_records(payroll_holidays_worksheet(), PAYROLL_HOLIDAY_HEADERS):
+        item_id = str(row.get("id") or "").strip()
+        if item_id:
+            latest[item_id] = row
+    rows = [
+        row for row in latest.values()
+        if normalize_text(row.get("status") or "active") not in {"da xoa", "deleted", "inactive"}
+        and (not month or str(row.get("date") or "")[:7] == month)
+    ]
+    return sorted(rows, key=lambda row: (str(row.get("date") or ""), normalize_text(row.get("name"))))
+
+
 def payroll_notes_map(month: str, view_type: str) -> dict[str, dict[str, Any]]:
     latest: dict[str, dict[str, Any]] = {}
     # Respect the shared worksheet cache to keep payroll loads responsive.
@@ -2036,6 +2124,31 @@ def active_car_wash_records() -> list[dict[str, Any]]:
     return [row for row in latest.values() if normalize_text(row.get("status")) not in {"da xoa", "deleted", "inactive"}]
 
 
+def localized_number(value: Any) -> float:
+    """Parse numbers returned by Google Sheets in either vi-VN or en-US format."""
+    if isinstance(value, (int, float)):
+        return float(value)
+    text = str(value or "").strip().replace(" ", "").replace("%", "")
+    if not text:
+        return 0.0
+    if "," in text and "." in text:
+        if text.rfind(",") > text.rfind("."):
+            text = text.replace(".", "").replace(",", ".")
+        else:
+            text = text.replace(",", "")
+    elif "," in text:
+        parts = text.split(",")
+        text = "".join(parts) if len(parts[-1]) == 3 else text.replace(",", ".")
+    elif "." in text:
+        parts = text.split(".")
+        if len(parts) > 2 or len(parts[-1]) == 3:
+            text = "".join(parts)
+    try:
+        return float(text)
+    except ValueError:
+        return 0.0
+
+
 def active_fuel_records() -> list[dict[str, Any]]:
     # Dữ liệu nhập trực tiếp trên Sheet dùng cache sống ngắn; thao tác ghi qua
     # ứng dụng cập nhật cache ngay nên không phải đọc lại toàn bộ tab.
@@ -2052,13 +2165,23 @@ def fuel_plate_key(value: Any) -> str:
     return re.sub(r"[^a-z0-9]", "", normalize_text(value))
 
 
-def previous_vehicle_fuel_record(plate: str, date_value: str, exclude_id: str = "") -> dict[str, Any] | None:
-    """Find the latest prior odometer for the vehicle, regardless of driver."""
+def previous_vehicle_fuel_record(
+    plate: str,
+    date_value: str,
+    exclude_id: str = "",
+    cutoff_created_at: str = "",
+) -> dict[str, Any] | None:
+    """Find the latest record that chronologically precedes the target vehicle record."""
     plate_key = fuel_plate_key(plate)
     if not plate_key:
         return None
-    candidates = []
-    for row in active_fuel_records():
+    rows = active_fuel_records()
+    target_index = next(
+        (index for index, row in enumerate(rows) if exclude_id and str(row.get("id") or "") == str(exclude_id)),
+        None,
+    )
+    candidates: list[tuple[str, str, int, dict[str, Any]]] = []
+    for index, row in enumerate(rows):
         if exclude_id and str(row.get("id") or "") == str(exclude_id):
             continue
         if fuel_plate_key(row.get("bienKiemSoat")) != plate_key:
@@ -2066,17 +2189,137 @@ def previous_vehicle_fuel_record(plate: str, date_value: str, exclude_id: str = 
         row_date = str(row.get("ngay") or "")[:10]
         if date_value and row_date and row_date > date_value:
             continue
-        if float(row.get("soKmTaplo") or 0) <= 0:
+        if exclude_id and date_value and row_date == date_value:
+            row_created_at = str(row.get("createdAt") or "")
+            if cutoff_created_at and row_created_at:
+                if row_created_at >= cutoff_created_at:
+                    continue
+            elif target_index is not None and index >= target_index:
+                continue
+        if localized_number(row.get("soKmTaplo")) <= 0:
             continue
-        candidates.append(row)
-    candidates.sort(
-        key=lambda row: (
-            str(row.get("ngay") or "")[:10],
-            str(row.get("updatedAt") or row.get("createdAt") or ""),
-        ),
-        reverse=True,
+        candidates.append((row_date, str(row.get("createdAt") or ""), index, row))
+    candidates.sort(key=lambda item: (item[0], item[1], item[2]), reverse=True)
+    return candidates[0][3] if candidates else None
+
+
+def next_vehicle_fuel_record(
+    plate: str,
+    date_value: str,
+    exclude_id: str = "",
+    cutoff_created_at: str = "",
+) -> dict[str, Any] | None:
+    """Find the first record after the target in one vehicle's odometer chain."""
+    plate_key = fuel_plate_key(plate)
+    if not plate_key:
+        return None
+    rows = active_fuel_records()
+    target_index = next(
+        (index for index, row in enumerate(rows) if exclude_id and str(row.get("id") or "") == str(exclude_id)),
+        None,
     )
-    return candidates[0] if candidates else None
+    candidates: list[tuple[str, str, int, dict[str, Any]]] = []
+    for index, row in enumerate(rows):
+        if exclude_id and str(row.get("id") or "") == str(exclude_id):
+            continue
+        if fuel_plate_key(row.get("bienKiemSoat")) != plate_key:
+            continue
+        row_date = str(row.get("ngay") or "")[:10]
+        if date_value and row_date and row_date < date_value:
+            continue
+        if date_value and row_date == date_value:
+            # A newly-created record is appended after existing records on the
+            # same day, so those rows are previous—not next—records.
+            if not exclude_id:
+                continue
+            row_created_at = str(row.get("createdAt") or "")
+            if cutoff_created_at and row_created_at:
+                if row_created_at <= cutoff_created_at:
+                    continue
+            elif target_index is not None and index <= target_index:
+                continue
+        if localized_number(row.get("soKmTaplo")) <= 0:
+            continue
+        candidates.append((row_date, str(row.get("createdAt") or ""), index, row))
+    candidates.sort(key=lambda item: (item[0], item[1], item[2]))
+    return candidates[0][3] if candidates else None
+
+
+def recalculate_vehicle_fuel_distances(
+    worksheet: Any,
+    plates: list[str] | tuple[str, ...] | set[str],
+    preserve_ids: set[str] | None = None,
+    start_after_ids: dict[str, str] | None = None,
+    start_dates: dict[str, str] | None = None,
+) -> int:
+    """Persist distance changes for each affected vehicle in chronological order.
+
+    The edited/new row may keep a manually-adjusted distance. Newer rows for the
+    same plate are recalculated from their own odometer minus the preceding
+    odometer, so changing an old milestone does not rewrite older history.
+    """
+    plate_keys = {fuel_plate_key(value) for value in plates if fuel_plate_key(value)}
+    if not plate_keys:
+        return 0
+    preserved = {str(value) for value in (preserve_ids or set()) if str(value)}
+    start_ids_by_plate = {
+        fuel_plate_key(plate): str(row_id)
+        for plate, row_id in (start_after_ids or {}).items()
+        if fuel_plate_key(plate) and str(row_id)
+    }
+    start_dates_by_plate = {
+        fuel_plate_key(plate): str(date_value or "")[:10]
+        for plate, date_value in (start_dates or {}).items()
+        if fuel_plate_key(plate) and str(date_value or "")[:10]
+    }
+    values = worksheet_values(worksheet, force_refresh=True)
+    if len(values) < 2:
+        return 0
+    headers = values[0]
+    try:
+        distance_column = headers.index("soKmDaChay") + 1
+    except ValueError:
+        return 0
+    grouped: dict[str, list[tuple[str, str, int, dict[str, Any]]]] = {}
+    for row_number, source in enumerate(values[1:], start=2):
+        padded = source + [""] * max(len(headers) - len(source), 0)
+        row = {header: padded[index] for index, header in enumerate(headers)}
+        if normalize_text(row.get("status")) in {"da xoa", "deleted", "inactive"}:
+            continue
+        plate_key = fuel_plate_key(row.get("bienKiemSoat"))
+        if plate_key not in plate_keys:
+            continue
+        grouped.setdefault(plate_key, []).append(
+            (str(row.get("ngay") or "")[:10], str(row.get("createdAt") or ""), row_number, row)
+        )
+
+    updates: list[dict[str, Any]] = []
+    for plate_key, records in grouped.items():
+        records.sort(key=lambda item: (item[0], item[1], item[2]))
+        previous_odometer: float | None = None
+        start_id = start_ids_by_plate.get(plate_key, "")
+        start_date = start_dates_by_plate.get(plate_key, "")
+        reached_start = not start_id and not start_date
+        for row_date, _, row_number, row in records:
+            current_odometer = max(0.0, localized_number(row.get("soKmTaplo")))
+            row_id = str(row.get("id") or "")
+            if start_id and row_id == start_id:
+                reached_start = True
+            elif not start_id and start_date and row_date >= start_date:
+                reached_start = True
+            calculated = 0.0 if previous_odometer is None else max(0.0, current_odometer - previous_odometer)
+            if reached_start and row_id not in preserved and abs(localized_number(row.get("soKmDaChay")) - calculated) > 0.000001:
+                updates.append(
+                    {
+                        "range": gspread.utils.rowcol_to_a1(row_number, distance_column),
+                        "values": [[sheet_storage_value("soKmDaChay", calculated)]],
+                    }
+                )
+            previous_odometer = current_odometer
+    if updates:
+        worksheet.batch_update(updates, value_input_option="RAW")
+        invalidate_worksheet_cache(worksheet)
+    return len(updates)
 
 
 def monthly_fuel_prices() -> dict[str, dict[str, Any]]:
@@ -2108,7 +2351,7 @@ def fuel_standard_rows(month: str) -> dict[str, Any]:
     price_row = prices.get(month) or {}
     if normalize_text(price_row.get("status")) in {"da xoa", "deleted", "inactive"}:
         price_row = {}
-    current_price = max(0, round(float(price_row.get("donGiaLit") or 0)))
+    current_price = max(0, round(localized_number(price_row.get("donGiaLit"))))
     totals: dict[str, dict[str, Any]] = {}
     for row in active_fuel_records():
         if str(row.get("ngay") or "")[:7] != month:
@@ -2117,8 +2360,8 @@ def fuel_standard_rows(month: str) -> dict[str, Any]:
         if not code:
             continue
         item = totals.setdefault(code, {"employeeCode": code, "employeeName": str(row.get("employeeName") or code), "bienKiemSoat": str(row.get("bienKiemSoat") or ""), "totalKm": 0.0, "totalLit": 0.0})
-        item["totalKm"] += max(0, float(row.get("soKmDaChay") or 0))
-        item["totalLit"] += max(0, float(row.get("soLit") or 0))
+        item["totalKm"] += max(0, localized_number(row.get("soKmDaChay")))
+        item["totalLit"] += max(0, localized_number(row.get("soLit")))
         if not item["employeeName"] or item["employeeName"] == code:
             item["employeeName"] = str(row.get("employeeName") or code)
         if row.get("bienKiemSoat"):
@@ -2342,12 +2585,6 @@ def normalize_phone(value: Any) -> str:
     if len(phone) == 9 and phone[0] in "35789":
         return f"0{phone}"
     return phone
-
-
-def normalize_order_points(value: Any) -> str:
-    """Store multiple pickup/drop-off points in a stable pipe-delimited format."""
-    points = [point.strip() for point in re.split(r"\s*(?:\||\r?\n)\s*", str(value or "")) if point.strip()]
-    return " | ".join(dict.fromkeys(points))
 
 
 def normalize_customer_segment(value: Any) -> str:
@@ -2783,9 +3020,7 @@ def find_row_by_id(worksheet: Any, row_id: str) -> int | None:
         id_column = headers.index("id")
     except ValueError:
         return None
-    # Dòng nằm sau cùng là bản mới nhất, đồng nhất với dữ liệu trả về giao diện.
-    for row_number in range(len(values), 1, -1):
-        row = values[row_number - 1]
+    for row_number, row in enumerate(values[1:], start=2):
         if id_column < len(row) and str(row[id_column]) == str(row_id):
             return row_number
     return None
@@ -2821,7 +3056,147 @@ def sheet_storage_value(header: str, value: Any) -> Any:
     return int(number) if number.is_integer() else number
 
 
+def order_history_actor(order: dict[str, Any]) -> str:
+    actors = [value.strip() for value in str(order.get("updateBy") or "").splitlines() if value.strip()]
+    return actors[-1] if actors else str(order.get("nguoiTaoDon") or "system").strip() or "system"
+
+
+def order_history_snapshot_values(
+    order: dict[str, Any],
+    snapshot_type: str,
+    source_row: int | str,
+    actor: str = "",
+) -> list[Any]:
+    order_id = str(order.get("id") or "").strip()
+    if not order_id:
+        raise HTTPException(status_code=409, detail="Không thể lưu lịch sử vì đơn hàng không có ID.")
+    return [
+        make_id("LS"),
+        order_id,
+        now_iso(),
+        actor.strip() or order_history_actor(order),
+        snapshot_type,
+        source_row,
+        json.dumps(order, ensure_ascii=False, separators=(",", ":")),
+    ]
+
+
+def append_order_history_snapshots(snapshots: list[tuple[dict[str, Any], str, int | str, str]]) -> None:
+    history_worksheet = order_history_worksheet()
+    if history_worksheet.row_values(1) != ORDER_HISTORY_HEADERS:
+        raise HTTPException(
+            status_code=409,
+            detail="Cấu trúc sheet lịch sử đơn hàng đã thay đổi. Hệ thống đã dừng ghi để bảo vệ dữ liệu.",
+        )
+    append_worksheet_rows(
+        history_worksheet,
+        [order_history_snapshot_values(order, kind, source, actor) for order, kind, source, actor in snapshots],
+    )
+
+
+def append_order_history_snapshot(
+    order: dict[str, Any],
+    snapshot_type: str,
+    source_row: int | str,
+    actor: str = "",
+) -> None:
+    append_order_history_snapshots([(order, snapshot_type, source_row, actor)])
+
+
+def update_order_row_safely(worksheet: Any, row: dict[str, Any]) -> None:
+    """Cập nhật đúng dòng theo ID, có kiểm soát phiên bản và bản sao phục hồi."""
+    order_id = str(row.get("id") or "").strip()
+    if not order_id:
+        raise HTTPException(status_code=409, detail="Không thể cập nhật đơn hàng không có ID.")
+
+    with worksheet_write_lock(worksheet):
+        live_values = worksheet.get_all_values()
+        if not live_values or "id" not in live_values[0]:
+            raise HTTPException(status_code=409, detail="Sheet đơn hàng không có cột ID hợp lệ.")
+        actual_headers = live_values[0]
+        if actual_headers != ORDER_HEADERS:
+            raise HTTPException(
+                status_code=409,
+                detail="Cấu trúc sheet đơn hàng đã thay đổi. Hệ thống đã dừng ghi để bảo vệ dữ liệu.",
+            )
+        id_column = actual_headers.index("id")
+        matching_rows = [
+            row_number
+            for row_number, values in enumerate(live_values[1:], start=2)
+            if id_column < len(values) and str(values[id_column]).strip() == order_id
+        ]
+        if not matching_rows:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Đơn {order_id} không còn ở vị trí hợp lệ. Hệ thống đã dừng ghi để bảo vệ dữ liệu.",
+            )
+        if len(matching_rows) != 1:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Đơn {order_id} có {len(matching_rows)} dòng trùng ID. Hệ thống đã khóa cập nhật để tránh mất dữ liệu.",
+            )
+
+        actual_row_number = matching_rows[0]
+        live_row = live_values[actual_row_number - 1]
+        indexes = {header: actual_headers.index(header) for header in ORDER_HEADERS if header in actual_headers}
+        current = {
+            header: live_row[index] if index < len(live_row) else ""
+            for header, index in indexes.items()
+        }
+        for header in ORDER_HEADERS:
+            current.setdefault(header, "")
+
+        new_update_times = [
+            value.strip() for value in str(row.get("updateAt") or "").splitlines() if value.strip()
+        ]
+        if not new_update_times:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Đơn {order_id} thiếu dấu phiên bản cập nhật. Hệ thống đã dừng ghi để bảo vệ dữ liệu.",
+            )
+        expected_previous_version = "\n".join(new_update_times[:-1])
+        current_version = "\n".join(
+            value.strip() for value in str(current.get("updateAt") or "").splitlines() if value.strip()
+        )
+        if current_version != expected_previous_version:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Đơn {order_id} vừa được người khác cập nhật. Vui lòng tải lại trước khi thao tác tiếp.",
+            )
+
+        actor = order_history_actor(row)
+        append_order_history_snapshots(
+            [
+                (current, "before_update", actual_row_number, actor),
+                (row, "intended_update", actual_row_number, actor),
+            ]
+        )
+
+        # Xác minh thêm lần cuối ngay trước lệnh ghi; nếu sheet vừa bị sort/chèn/xóa
+        # thì tuyệt đối không sử dụng số dòng đã xác định ở trên.
+        verified_id = str(worksheet.cell(actual_row_number, id_column + 1).value or "").strip()
+        if verified_id != order_id:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Vị trí của đơn {order_id} vừa thay đổi trên Google Sheet. Không có dữ liệu nào bị ghi đè.",
+            )
+
+        values = [[sheet_storage_value(header, row.get(header, "")) for header in ORDER_HEADERS]]
+        end_col = gspread.utils.rowcol_to_a1(actual_row_number, len(ORDER_HEADERS)).replace(
+            str(actual_row_number), ""
+        )
+        worksheet.update(
+            f"A{actual_row_number}:{end_col}{actual_row_number}",
+            values,
+            value_input_option="RAW",
+        )
+        invalidate_worksheet_cache(worksheet)
+
+
 def update_row_by_headers(worksheet: Any, row_number: int, headers: list[str], row: dict[str, Any]) -> None:
+    if headers == ORDER_HEADERS and str(getattr(worksheet, "title", "")) == ORDERS_SHEET_NAME:
+        update_order_row_safely(worksheet, row)
+        return
     values = [[sheet_storage_value(header, row.get(header, "")) for header in headers]]
     end_col = gspread.utils.rowcol_to_a1(row_number, len(headers)).replace(str(row_number), "")
     worksheet.update(f"A{row_number}:{end_col}{row_number}", values, value_input_option="RAW")
@@ -2843,16 +3218,40 @@ def append_worksheet_row(worksheet: Any, values: list[Any]) -> None:
     append_worksheet_rows(worksheet, [values])
 
 
-def worksheet_write_lock(worksheet: Any) -> threading.Lock:
+def append_order_row_safely(values: list[Any]) -> None:
+    if len(values) != len(ORDER_HEADERS):
+        raise HTTPException(status_code=500, detail="Cấu trúc dữ liệu đơn hàng không hợp lệ.")
+    order = {header: values[index] for index, header in enumerate(ORDER_HEADERS)}
+    order_id = str(order.get("id") or "").strip()
+    if not order_id:
+        raise HTTPException(status_code=409, detail="Không thể tạo đơn hàng không có ID.")
+    worksheet = orders_worksheet()
+    with worksheet_write_lock(worksheet):
+        live_values = worksheet.get_all_values()
+        if not live_values or live_values[0] != ORDER_HEADERS:
+            raise HTTPException(status_code=409, detail="Sheet đơn hàng không có cột ID hợp lệ.")
+        id_column = live_values[0].index("id")
+        if any(
+            id_column < len(existing) and str(existing[id_column]).strip() == order_id
+            for existing in live_values[1:]
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail=f"ID đơn {order_id} đã tồn tại. Hệ thống đã dừng tạo để tránh ghi trùng dữ liệu.",
+            )
+        append_order_history_snapshot(order, "created", "new", order_history_actor(order))
+        normalized = [
+            sheet_storage_value(ORDER_HEADERS[index], value)
+            for index, value in enumerate(values)
+        ]
+        worksheet.append_row(normalized, value_input_option="RAW")
+        invalidate_worksheet_cache(worksheet)
+
+
+def worksheet_write_lock(worksheet: Any) -> threading.RLock:
     key = str(getattr(worksheet, "id", "") or getattr(worksheet, "title", "") or id(worksheet))
     with _WORKSHEET_WRITE_LOCKS_LOCK:
-        return _WORKSHEET_WRITE_LOCKS.setdefault(key, threading.Lock())
-
-
-def order_create_lock(order_id: str) -> threading.Lock:
-    """Serialize retries for the same client-generated order id."""
-    with _ORDER_CREATE_LOCKS_LOCK:
-        return _ORDER_CREATE_LOCKS.setdefault(order_id, threading.Lock())
+        return _WORKSHEET_WRITE_LOCKS.setdefault(key, threading.RLock())
 
 
 def append_worksheet_rows(worksheet: Any, rows: list[list[Any]]) -> None:
@@ -2887,26 +3286,7 @@ def append_worksheet_rows(worksheet: Any, rows: list[list[Any]]) -> None:
 
 
 def row_by_id(rows: list[dict[str, Any]], row_id: str) -> dict[str, Any] | None:
-    return next((row for row in reversed(rows) if str(row.get("id")) == str(row_id)), None)
-
-
-def soft_delete_older_duplicate_rows(
-    worksheet: Any,
-    headers: list[str],
-    row_id: str,
-    keep_row_number: int,
-    request: Request,
-) -> None:
-    """Giữ bản ghi mới nhất và xóa mềm các bản trùng cũ của cùng một ID."""
-    values = worksheet_values(worksheet, force_refresh=True)
-    for row_number in find_rows_by_id(worksheet, row_id):
-        if row_number == keep_row_number or row_number > len(values):
-            continue
-        raw = values[row_number - 1]
-        padded = raw + [""] * max(len(headers) - len(raw), 0)
-        duplicate = {header: padded[index] for index, header in enumerate(headers)}
-        if not is_deleted_row(duplicate):
-            soft_delete_row(worksheet, row_number, headers, duplicate, request)
+    return next((row for row in rows if str(row.get("id")) == str(row_id)), None)
 
 
 def is_pending_reopen_status(value: Any) -> bool:
@@ -3925,7 +4305,11 @@ def list_accounting_fuel(request: Request) -> dict[str, Any]:
         raise HTTPException(status_code=403, detail="Chỉ bộ phận Kế toán được quản lý dữ liệu xăng.")
     result = []
     for row in active_fuel_records():
-        row["thanhTien"] = round(float(row.get("soLit") or 0) * float(row.get("donGiaLit") or 0))
+        row["soLit"] = localized_number(row.get("soLit"))
+        row["donGiaLit"] = localized_number(row.get("donGiaLit"))
+        row["soKmTaplo"] = localized_number(row.get("soKmTaplo"))
+        row["soKmDaChay"] = localized_number(row.get("soKmDaChay"))
+        row["thanhTien"] = round(row["soLit"] * row["donGiaLit"])
         result.append(row)
     return {"sheetName": FUEL_RECORDS_SHEET_NAME, "rows": sorted(result, key=lambda row: str(row.get("ngay") or ""), reverse=True), "drivers": travel_fuel_drivers(), "fetchedAt": now_iso()}
 
@@ -4104,10 +4488,16 @@ def create_accounting_fuel(payload: FuelRecordInput, request: Request) -> dict[s
     driver = next((row for row in travel_fuel_drivers() if row["employeeCode"] == code), None)
     plate = payload.bienKiemSoat.strip() or str((driver or {}).get("bienKiemSoat") or "").strip()
     previous = previous_vehicle_fuel_record(plate, payload.ngay)
-    if previous and payload.soKmTaplo < float(previous.get("soKmTaplo") or 0):
+    if previous and payload.soKmTaplo < localized_number(previous.get("soKmTaplo")):
         raise HTTPException(
             status_code=422,
-            detail=f"Số km taplo của xe {plate} không được nhỏ hơn mốc gần nhất {float(previous.get('soKmTaplo') or 0):g} km.",
+            detail=f"Số km taplo của xe {plate} không được nhỏ hơn mốc gần nhất {localized_number(previous.get('soKmTaplo')):g} km.",
+        )
+    following = next_vehicle_fuel_record(plate, payload.ngay)
+    if following and payload.soKmTaplo > localized_number(following.get("soKmTaplo")):
+        raise HTTPException(
+            status_code=422,
+            detail=f"Số km taplo của xe {plate} không được lớn hơn mốc kế tiếp {localized_number(following.get('soKmTaplo')):g} km.",
         )
     row = {
         "id": secrets.token_hex(8), "ngay": payload.ngay, "employeeCode": code,
@@ -4121,7 +4511,275 @@ def create_accounting_fuel(payload: FuelRecordInput, request: Request) -> dict[s
     worksheet = fuel_records_worksheet()
     append_worksheet_row(worksheet, [row.get(header, "") for header in FUEL_RECORD_HEADERS])
     invalidate_worksheet_cache(worksheet)
-    return {"ok": True, "row": row}
+    recalculated_count = recalculate_vehicle_fuel_distances(
+        worksheet,
+        [plate],
+        {row["id"]},
+        start_after_ids={plate: row["id"]},
+    )
+    return {"ok": True, "row": row, "recalculatedCount": recalculated_count}
+
+
+def fuel_import_header_key(value: Any) -> str:
+    return re.sub(r"[^a-z0-9]", "", normalize_text(value))
+
+
+FUEL_IMPORT_HEADER_ALIASES = {
+    "ngay": {"ngay", "ngaydo", "date"},
+    "employeeCode": {"manv", "manhanvien", "employeecode"},
+    "employeeName": {"taixe", "hoten", "hovaten", "tennhanvien", "employeename"},
+    "bienKiemSoat": {"bsx", "biensoxe", "bienkiemsoat", "bks", "plate"},
+    "loaiNhienLieu": {"loainhienlieu", "nhienlieu", "fueltype"},
+    "soLit": {"solit", "lit", "litdo", "liters"},
+    "donGiaLit": {"dongialit", "dongia", "giaxang", "price"},
+    "soKmTaplo": {"sokmtaplo", "kmtaplo", "taplo", "odometer"},
+    "soKmDaChay": {"sokmdachay", "sokmdiduoc", "kmdachay", "kmdiduoc", "distance"},
+}
+
+
+def fuel_import_column_map(header_values: list[Any]) -> dict[str, int]:
+    normalized = [fuel_import_header_key(value) for value in header_values]
+    result: dict[str, int] = {}
+    for field, aliases in FUEL_IMPORT_HEADER_ALIASES.items():
+        index = next((position for position, header in enumerate(normalized) if header in aliases), None)
+        if index is not None:
+            result[field] = index
+    return result
+
+
+def fuel_import_cell(values: tuple[Any, ...], columns: dict[str, int], field: str) -> Any:
+    index = columns.get(field)
+    return values[index] if index is not None and index < len(values) else ""
+
+
+def fuel_import_date(value: Any) -> str:
+    if isinstance(value, datetime):
+        return value.strftime("%Y-%m-%d")
+    parsed = parse_existing_date(value)
+    return parsed.strftime("%Y-%m-%d") if parsed else ""
+
+
+@app.get("/api/accounting/fuel/import-template")
+def download_accounting_fuel_import_template(request: Request) -> Response:
+    user = current_user(request)
+    if str(user.get("role") or "") not in {"admin", "ke_toan"}:
+        raise HTTPException(status_code=403, detail="Chỉ bộ phận Kế toán được tải mẫu nhập dữ liệu xăng.")
+    try:
+        from openpyxl import Workbook
+        from openpyxl.styles import Alignment, Font, PatternFill
+        from openpyxl.utils import get_column_letter
+    except ImportError as exc:
+        raise HTTPException(status_code=500, detail="Thiếu thư viện xử lý Excel.") from exc
+
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "Nhap do xang"
+    headers = ["Ngày", "Mã NV", "Tài xế", "Biển số xe", "Loại nhiên liệu", "Số lít", "Đơn giá / lít", "Số km taplo", "Số km đi được"]
+    sample = [datetime.now().strftime("%d/%m/%Y"), "DX0001", "Nguyễn Văn A", "60A-123.45", "Xăng E5 RON92", 20, 24230, 50000, ""]
+    for column, header in enumerate(headers, 1):
+        cell = sheet.cell(1, column, header)
+        cell.font = Font(bold=True, color="12343B")
+        cell.fill = PatternFill("solid", fgColor="DDEFF0")
+        cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    for column, value in enumerate(sample, 1):
+        sheet.cell(2, column, value)
+    widths = [15, 13, 25, 17, 22, 12, 17, 17, 18]
+    for column, width in enumerate(widths, 1):
+        sheet.column_dimensions[get_column_letter(column)].width = width
+    sheet.freeze_panes = "A2"
+    notes = workbook.create_sheet("Huong dan")
+    instructions = [
+        "HƯỚNG DẪN IMPORT ĐỔ XĂNG TRAVEL",
+        "- Không đổi tên hàng tiêu đề của sheet 'Nhap do xang'.",
+        "- Mã NV hoặc Tài xế phải khớp danh sách lái xe Travel trên hệ thống.",
+        "- Biển số xe, ngày, loại nhiên liệu, số lít, đơn giá và số km taplo là bắt buộc.",
+        "- Cột Số km đi được có thể để trống; hệ thống sẽ tự tính theo mốc taplo của cùng biển số.",
+        "- Dòng trùng dữ liệu đã có sẽ được bỏ qua. Tháng đã chốt lương không được import.",
+    ]
+    for row_number, text in enumerate(instructions, 1):
+        notes.cell(row_number, 1, text)
+    notes["A1"].font = Font(bold=True, size=14, color="0B5963")
+    notes.column_dimensions["A"].width = 110
+    output = BytesIO()
+    workbook.save(output)
+    output.seek(0)
+    return Response(
+        content=output.getvalue(),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": 'attachment; filename="mau-import-do-xang-travel.xlsx"'},
+    )
+
+
+@app.post("/api/accounting/fuel/import")
+async def import_accounting_fuel(request: Request) -> dict[str, Any]:
+    user = current_user(request)
+    if str(user.get("role") or "") not in {"admin", "ke_toan"}:
+        raise HTTPException(status_code=403, detail="Chỉ bộ phận Kế toán được import dữ liệu xăng.")
+    content = await request.body()
+    if not content:
+        raise HTTPException(status_code=400, detail="Vui lòng chọn file Excel cần import.")
+    if len(content) > 10 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="File import không được lớn hơn 10 MB.")
+    try:
+        from openpyxl import load_workbook
+        workbook = load_workbook(BytesIO(content), read_only=True, data_only=True)
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail="Không đọc được file Excel. Vui lòng dùng file .xlsx theo mẫu.") from exc
+
+    sheet = workbook["Nhap do xang"] if "Nhap do xang" in workbook.sheetnames else workbook.active
+    iterator = sheet.iter_rows(values_only=True)
+    header_values = list(next(iterator, ()) or ())
+    columns = fuel_import_column_map(header_values)
+    required_fields = {"ngay", "bienKiemSoat", "loaiNhienLieu", "soLit", "donGiaLit", "soKmTaplo"}
+    missing = sorted(required_fields - set(columns))
+    if "employeeCode" not in columns and "employeeName" not in columns:
+        missing.append("employeeCode")
+    if missing:
+        raise HTTPException(status_code=422, detail="File thiếu cột bắt buộc hoặc tiêu đề không đúng mẫu.")
+
+    drivers = travel_fuel_drivers()
+    drivers_by_code = {str(item.get("employeeCode") or "").strip().upper(): item for item in drivers}
+    drivers_by_name = {normalize_text(item.get("employeeName")): item for item in drivers if str(item.get("employeeName") or "").strip()}
+    existing = active_fuel_records()
+    duplicate_keys = {
+        (
+            str(row.get("ngay") or "")[:10],
+            str(row.get("employeeCode") or "").strip().upper(),
+            fuel_plate_key(row.get("bienKiemSoat")),
+            round(localized_number(row.get("soKmTaplo")), 3),
+            round(localized_number(row.get("soLit")), 3),
+        )
+        for row in existing
+    }
+    working_by_plate: dict[str, list[dict[str, Any]]] = {}
+    for index, row in enumerate(existing):
+        plate_key = fuel_plate_key(row.get("bienKiemSoat"))
+        if not plate_key:
+            continue
+        working_by_plate.setdefault(plate_key, []).append({
+            "date": str(row.get("ngay") or "")[:10],
+            "createdAt": str(row.get("createdAt") or ""),
+            "index": index,
+            "odometer": localized_number(row.get("soKmTaplo")),
+        })
+
+    parsed_rows: list[dict[str, Any]] = []
+    errors: list[dict[str, Any]] = []
+    for excel_row_number, values in enumerate(iterator, start=2):
+        if excel_row_number > 1001:
+            errors.append({"row": excel_row_number, "message": "Chỉ hỗ trợ tối đa 1.000 dòng mỗi lần import."})
+            break
+        values = tuple(values or ())
+        if not any(value not in (None, "") for value in values):
+            continue
+        date_value = fuel_import_date(fuel_import_cell(values, columns, "ngay"))
+        code = str(fuel_import_cell(values, columns, "employeeCode") or "").strip().upper()
+        name = str(fuel_import_cell(values, columns, "employeeName") or "").strip()
+        driver = drivers_by_code.get(code) if code else drivers_by_name.get(normalize_text(name))
+        if not driver:
+            errors.append({"row": excel_row_number, "message": "Không tìm thấy lái xe Travel theo Mã NV hoặc Tài xế."})
+            continue
+        code = str(driver.get("employeeCode") or code).strip().upper()
+        name = str(driver.get("employeeName") or name or code).strip()
+        plate = str(fuel_import_cell(values, columns, "bienKiemSoat") or driver.get("bienKiemSoat") or "").strip().upper()
+        fuel_type = str(fuel_import_cell(values, columns, "loaiNhienLieu") or "").strip()
+        liters = localized_number(fuel_import_cell(values, columns, "soLit"))
+        price = localized_number(fuel_import_cell(values, columns, "donGiaLit"))
+        odometer = localized_number(fuel_import_cell(values, columns, "soKmTaplo"))
+        raw_distance = fuel_import_cell(values, columns, "soKmDaChay")
+        if not date_value:
+            errors.append({"row": excel_row_number, "message": "Ngày không hợp lệ; dùng dd/MM/yyyy hoặc yyyy-MM-dd."})
+            continue
+        if fuel_month_lock(date_value[:7]):
+            errors.append({"row": excel_row_number, "message": f"Tháng {date_value[:7]} đã chốt lương."})
+            continue
+        if not plate or not fuel_type or liters <= 0 or price < 0 or odometer < 0:
+            errors.append({"row": excel_row_number, "message": "Thiếu biển số, loại nhiên liệu hoặc số liệu không hợp lệ."})
+            continue
+        duplicate_key = (date_value, code, fuel_plate_key(plate), round(odometer, 3), round(liters, 3))
+        if duplicate_key in duplicate_keys:
+            errors.append({"row": excel_row_number, "message": "Dòng trùng dữ liệu đã có, hệ thống đã bỏ qua."})
+            continue
+        parsed_rows.append({
+            "excelRow": excel_row_number,
+            "ngay": date_value,
+            "employeeCode": code,
+            "employeeName": name,
+            "bienKiemSoat": plate,
+            "loaiNhienLieu": fuel_type,
+            "soLit": liters,
+            "donGiaLit": price,
+            "soKmTaplo": odometer,
+            "manualDistance": raw_distance not in (None, ""),
+            "soKmDaChay": max(0.0, localized_number(raw_distance)),
+            "duplicateKey": duplicate_key,
+        })
+
+    parsed_rows.sort(key=lambda item: (item["ngay"], item["excelRow"]))
+    accepted: list[dict[str, Any]] = []
+    imported_at = now_iso()
+    imported_by = current_user_display_name(request)
+    for item in parsed_rows:
+        plate_key = fuel_plate_key(item["bienKiemSoat"])
+        chain = working_by_plate.setdefault(plate_key, [])
+        previous_candidates = [row for row in chain if row["date"] <= item["ngay"]]
+        following_candidates = [row for row in chain if row["date"] > item["ngay"]]
+        previous = max(previous_candidates, key=lambda row: (row["date"], row["createdAt"], row["index"])) if previous_candidates else None
+        following = min(following_candidates, key=lambda row: (row["date"], row["createdAt"], row["index"])) if following_candidates else None
+        if previous and item["soKmTaplo"] < previous["odometer"]:
+            errors.append({"row": item["excelRow"], "message": f"Taplo nhỏ hơn mốc trước {previous['odometer']:g} km của xe {item['bienKiemSoat']}."})
+            continue
+        if following and item["soKmTaplo"] > following["odometer"]:
+            errors.append({"row": item["excelRow"], "message": f"Taplo lớn hơn mốc sau {following['odometer']:g} km của xe {item['bienKiemSoat']}."})
+            continue
+        if not item["manualDistance"]:
+            item["soKmDaChay"] = max(0.0, item["soKmTaplo"] - previous["odometer"]) if previous else 0.0
+        row_id = secrets.token_hex(8)
+        row = {
+            "id": row_id,
+            "ngay": item["ngay"],
+            "employeeCode": item["employeeCode"],
+            "employeeName": item["employeeName"],
+            "bienKiemSoat": item["bienKiemSoat"],
+            "loaiNhienLieu": item["loaiNhienLieu"],
+            "soLit": item["soLit"],
+            "donGiaLit": item["donGiaLit"],
+            "thanhTien": round(item["soLit"] * item["donGiaLit"]),
+            "soKmTaplo": item["soKmTaplo"],
+            "soKmDaChay": item["soKmDaChay"],
+            "createdBy": imported_by,
+            "createdAt": imported_at,
+            "updatedBy": "",
+            "updatedAt": "",
+            "status": "active",
+        }
+        accepted.append(row)
+        duplicate_keys.add(item["duplicateKey"])
+        chain.append({"date": item["ngay"], "createdAt": imported_at, "index": item["excelRow"], "odometer": item["soKmTaplo"]})
+
+    recalculated_count = 0
+    if accepted:
+        worksheet = fuel_records_worksheet()
+        append_worksheet_rows(worksheet, [[row.get(header, "") for header in FUEL_RECORD_HEADERS] for row in accepted])
+        plates = {row["bienKiemSoat"] for row in accepted}
+        start_dates = {
+            plate: min(row["ngay"] for row in accepted if fuel_plate_key(row["bienKiemSoat"]) == fuel_plate_key(plate))
+            for plate in plates
+        }
+        recalculated_count = recalculate_vehicle_fuel_distances(
+            worksheet,
+            list(plates),
+            {row["id"] for row in accepted},
+            start_dates=start_dates,
+        )
+    errors.sort(key=lambda item: int(item.get("row") or 0))
+    return {
+        "ok": True,
+        "importedCount": len(accepted),
+        "skippedCount": len(errors),
+        "recalculatedCount": recalculated_count,
+        "errors": errors[:100],
+    }
 
 
 @app.put("/api/accounting/fuel/{record_id}")
@@ -4134,16 +4792,40 @@ def update_accounting_fuel(record_id: str, payload: FuelRecordInput, request: Re
     if row_number is None:
         raise HTTPException(status_code=404, detail="Không tìm thấy lần đổ xăng.")
     existing = row_by_id(worksheet_records(worksheet, FUEL_RECORD_HEADERS), record_id) or {}
+    existing_date = str(existing.get("ngay") or "")[:10]
+    if payload.ngay != existing_date:
+        raise HTTPException(status_code=422, detail="Không được thay đổi ngày của lần đổ xăng đang sửa.")
     if fuel_month_lock(str(existing.get("ngay") or "")[:7]) or fuel_month_lock(payload.ngay[:7]):
         raise HTTPException(status_code=409, detail="Thang da chot luong, khong the sua dinh muc xang.")
     code = payload.employeeCode.strip().upper()
     driver = next((row for row in travel_fuel_drivers() if row["employeeCode"] == code), None)
     plate = payload.bienKiemSoat.strip() or str((driver or {}).get("bienKiemSoat") or "").strip()
-    previous = previous_vehicle_fuel_record(plate, payload.ngay, record_id)
-    if previous and payload.soKmTaplo < float(previous.get("soKmTaplo") or 0):
+    odometer_context_changed = (
+        fuel_plate_key(existing.get("bienKiemSoat")) != fuel_plate_key(plate)
+        or str(existing.get("ngay") or "")[:10] != payload.ngay
+        or localized_number(existing.get("soKmTaplo")) != payload.soKmTaplo
+    )
+    previous = previous_vehicle_fuel_record(
+        plate,
+        payload.ngay,
+        record_id,
+        str(existing.get("createdAt") or ""),
+    )
+    if odometer_context_changed and previous and payload.soKmTaplo < localized_number(previous.get("soKmTaplo")):
         raise HTTPException(
             status_code=422,
-            detail=f"Số km taplo của xe {plate} không được nhỏ hơn mốc gần nhất {float(previous.get('soKmTaplo') or 0):g} km.",
+            detail=f"Số km taplo của xe {plate} không được nhỏ hơn mốc gần nhất {localized_number(previous.get('soKmTaplo')):g} km.",
+        )
+    following = next_vehicle_fuel_record(
+        plate,
+        payload.ngay,
+        record_id,
+        str(existing.get("createdAt") or ""),
+    )
+    if odometer_context_changed and following and payload.soKmTaplo > localized_number(following.get("soKmTaplo")):
+        raise HTTPException(
+            status_code=422,
+            detail=f"Số km taplo của xe {plate} không được lớn hơn mốc kế tiếp {localized_number(following.get('soKmTaplo')):g} km.",
         )
     updated = {**existing, "id": record_id, "ngay": payload.ngay, "employeeCode": code,
         "employeeName": (driver or {}).get("employeeName") or payload.employeeName.strip() or code,
@@ -4152,7 +4834,14 @@ def update_accounting_fuel(record_id: str, payload: FuelRecordInput, request: Re
         "thanhTien": round(payload.soLit * payload.donGiaLit), "soKmTaplo": payload.soKmTaplo, "soKmDaChay": payload.soKmDaChay,
         "updatedBy": current_user_display_name(request), "updatedAt": now_iso(), "status": "active"}
     update_row_by_headers(worksheet, row_number, FUEL_RECORD_HEADERS, updated)
-    return {"ok": True, "row": updated}
+    recalculated_count = recalculate_vehicle_fuel_distances(
+        worksheet,
+        [str(existing.get("bienKiemSoat") or ""), plate],
+        {record_id},
+        start_after_ids={plate: record_id},
+        start_dates={str(existing.get("bienKiemSoat") or ""): existing_date},
+    )
+    return {"ok": True, "row": updated, "recalculatedCount": recalculated_count}
 
 
 @app.delete("/api/accounting/fuel/{record_id}")
@@ -4169,7 +4858,12 @@ def delete_accounting_fuel(record_id: str, request: Request) -> dict[str, Any]:
         raise HTTPException(status_code=409, detail="Thang da chot luong, khong the xoa du lieu xang.")
     deleted = {**existing, "status": "Đã xóa", "updatedBy": current_user_display_name(request), "updatedAt": now_iso()}
     update_row_by_headers(worksheet, row_number, FUEL_RECORD_HEADERS, deleted)
-    return {"ok": True}
+    recalculated_count = recalculate_vehicle_fuel_distances(
+        worksheet,
+        [str(existing.get("bienKiemSoat") or "")],
+        start_dates={str(existing.get("bienKiemSoat") or ""): str(existing.get("ngay") or "")[:10]},
+    )
+    return {"ok": True, "recalculatedCount": recalculated_count}
 
 
 @app.get("/api/accounting/fuel-prices")
@@ -4475,6 +5169,82 @@ def payroll_lock_summary(month: str) -> dict[str, dict[str, Any] | None]:
     }
 
 
+def payroll_holiday_month_locked(month: str) -> bool:
+    return any(payroll_lock_for(month, view_type) for view_type in ("travel", "cargo"))
+
+
+@app.get("/api/accounting/payroll-holidays")
+def list_accounting_payroll_holidays(request: Request, month: str = "") -> dict[str, Any]:
+    user = current_user(request)
+    if str(user.get("role") or "") not in {"admin", "ke_toan"}:
+        raise HTTPException(status_code=403, detail="Chỉ bộ phận Kế toán được xem danh mục ngày lễ.")
+    if month and not re.fullmatch(r"\d{4}-\d{2}", month):
+        raise HTTPException(status_code=400, detail="Tháng không hợp lệ.")
+    rows = active_payroll_holidays(month)
+    locks = payroll_lock_summary(month) if month else {"travel": None, "cargo": None}
+    return {
+        "sheetName": PAYROLL_HOLIDAYS_SHEET_NAME,
+        "month": month,
+        "rows": rows,
+        "locked": any(locks.values()),
+        "locks": locks,
+        "fetchedAt": now_iso(),
+    }
+
+
+@app.post("/api/accounting/payroll-holidays")
+def create_accounting_payroll_holiday(payload: PayrollHolidayInput, request: Request) -> dict[str, Any]:
+    user = current_user(request)
+    if str(user.get("role") or "") not in {"admin", "ke_toan"}:
+        raise HTTPException(status_code=403, detail="Chỉ bộ phận Kế toán được khai báo ngày lễ.")
+    try:
+        holiday_date = datetime.strptime(payload.date, "%Y-%m-%d")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Ngày lễ không hợp lệ.") from exc
+    month = holiday_date.strftime("%Y-%m")
+    if payroll_holiday_month_locked(month):
+        raise HTTPException(status_code=409, detail="Tháng này đã chốt lương, không thể thay đổi ngày lễ.")
+    if any(str(row.get("date") or "")[:10] == payload.date for row in active_payroll_holidays(month)):
+        raise HTTPException(status_code=409, detail="Ngày này đã được khai báo là ngày lễ.")
+    row = {
+        "id": secrets.token_hex(8),
+        "date": payload.date,
+        "name": payload.name.strip(),
+        "status": "active",
+        "updatedBy": current_user_display_name(request),
+        "updatedAt": now_iso(),
+    }
+    worksheet = payroll_holidays_worksheet()
+    worksheet.append_row([row.get(header, "") for header in PAYROLL_HOLIDAY_HEADERS], value_input_option="RAW")
+    invalidate_worksheet_cache(worksheet)
+    log_action(request, "create_payroll_holiday", "payroll_holiday", row["id"], after=row)
+    return {"ok": True, "row": row}
+
+
+@app.delete("/api/accounting/payroll-holidays/{holiday_id}")
+def delete_accounting_payroll_holiday(holiday_id: str, request: Request) -> dict[str, Any]:
+    user = current_user(request)
+    if str(user.get("role") or "") not in {"admin", "ke_toan"}:
+        raise HTTPException(status_code=403, detail="Chỉ bộ phận Kế toán được xóa ngày lễ.")
+    existing = next((row for row in active_payroll_holidays() if str(row.get("id") or "") == holiday_id), None)
+    if not existing:
+        raise HTTPException(status_code=404, detail="Không tìm thấy ngày lễ.")
+    month = str(existing.get("date") or "")[:7]
+    if payroll_holiday_month_locked(month):
+        raise HTTPException(status_code=409, detail="Tháng này đã chốt lương, không thể thay đổi ngày lễ.")
+    deleted = {
+        **existing,
+        "status": "inactive",
+        "updatedBy": current_user_display_name(request),
+        "updatedAt": now_iso(),
+    }
+    worksheet = payroll_holidays_worksheet()
+    worksheet.append_row([deleted.get(header, "") for header in PAYROLL_HOLIDAY_HEADERS], value_input_option="RAW")
+    invalidate_worksheet_cache(worksheet)
+    log_action(request, "delete_payroll_holiday", "payroll_holiday", holiday_id, before=existing, after=deleted)
+    return {"ok": True}
+
+
 @app.get("/api/accounting/attendance")
 def list_accounting_attendance(request: Request, month: str = "") -> dict[str, Any]:
     user = current_user(request)
@@ -4743,7 +5513,7 @@ def accounting_payroll_rows(month: str, view_type: str) -> dict[str, Any]:
     # Các nguồn dưới đây độc lập với nhau nhưng trước đây bị đọc tuần tự. Khi
     # cache vừa hết hạn, độ trễ vì vậy bằng tổng thời gian của nhiều tab Google.
     # Đọc song song giúp lần mở đầu tiên chỉ phải chờ tab chậm nhất.
-    with ThreadPoolExecutor(max_workers=7, thread_name_prefix="payroll-read") as executor:
+    with ThreadPoolExecutor(max_workers=8, thread_name_prefix="payroll-read") as executor:
         roster_future = executor.submit(roster_rows)
         overrides_future = executor.submit(
             lambda: worksheet_records(attendance_overrides_worksheet(), ATTENDANCE_OVERRIDE_HEADERS)
@@ -4755,6 +5525,7 @@ def accounting_payroll_rows(month: str, view_type: str) -> dict[str, Any]:
         fuel_future = executor.submit(fuel_standard_rows, month) if view_type == "travel" else None
         deductions_future = executor.submit(active_payroll_deductions, month, view_type)
         notes_future = executor.submit(payroll_notes_map, month, view_type)
+        holidays_future = executor.submit(active_payroll_holidays, month)
 
         roster_sources = roster_future.result()
         override_sources = overrides_future.result()
@@ -4763,6 +5534,16 @@ def accounting_payroll_rows(month: str, view_type: str) -> dict[str, Any]:
         fuel_payload = fuel_future.result() if fuel_future else {"rows": []}
         deduction_sources = deductions_future.result()
         payroll_notes = notes_future.result()
+        holiday_sources = holidays_future.result()
+
+    holidays_by_date = {
+        str(row.get("date") or "")[:10]: {
+            "date": str(row.get("date") or "")[:10],
+            "name": str(row.get("name") or "Ngày lễ").strip() or "Ngày lễ",
+        }
+        for row in holiday_sources
+        if re.fullmatch(r"\d{4}-\d{2}-\d{2}", str(row.get("date") or "")[:10])
+    }
 
     drivers: dict[str, dict[str, Any]] = {}
     events: dict[str, str] = {}
@@ -4879,6 +5660,15 @@ def accounting_payroll_rows(month: str, view_type: str) -> dict[str, Any]:
         total_allowance = sum(item["amount"] for item in allowances)
         overtime_pay = round(overtime_minutes / 60 * 30_000) if view_type == "cargo" else 0
         attendance_bonus = bonus_amount if work_days >= required_days else 0
+        holiday_details = []
+        for holiday_date, holiday in holidays_by_date.items():
+            holiday_day = int(holiday_date[-2:])
+            mark = overrides.get(f"{code}:{holiday_day}") or events.get(f"{code}:{holiday_day}") or "KL"
+            if mark == "X":
+                holiday_details.append(holiday)
+        holiday_bonus_per_day = round(base_salary / required_days * 3) if base_salary > 0 and required_days > 0 else 0
+        holiday_work_days = len(holiday_details)
+        holiday_bonus = holiday_bonus_per_day * holiday_work_days
         fuel = fuel_by_driver.get(code, {})
         fuel_saving_bonus = int(fuel.get("savingBonus") or 0)
         fuel_overuse_charge = int(fuel.get("overuseCharge") or 0)
@@ -4886,7 +5676,7 @@ def accounting_payroll_rows(month: str, view_type: str) -> dict[str, Any]:
         travel_revenue_bonus = round(travel_revenue * TRAVEL_REVENUE_BONUS_RATE) if view_type == "travel" else 0
         deductions = deductions_by_driver.get(code, [])
         total_deduction = sum(item["amount"] for item in deductions)
-        gross_salary = base_salary + total_allowance + overtime_pay + attendance_bonus + travel_revenue_bonus
+        gross_salary = base_salary + total_allowance + overtime_pay + attendance_bonus + holiday_bonus + travel_revenue_bonus
         # Fuel overuse is a separate charge collected from the driver, so it
         # reduces the amount actually paid without being merged into the
         # user-managed deduction columns. Fuel saving remains a separate bonus
@@ -4895,9 +5685,9 @@ def accounting_payroll_rows(month: str, view_type: str) -> dict[str, Any]:
         payroll_note = str((payroll_notes.get(code) or {}).get("note") or "").strip()
         if not payroll_note:
             payroll_note = next((str(item.get("note") or "").strip() for item in deductions if normalize_text(item.get("type")) == "khac" and str(item.get("note") or "").strip()), "")
-        output_rows.append({**driver, "requiredDays": required_days, "workDays": work_days, "baseSalary": base_salary, "allowances": allowances, "totalAllowance": total_allowance, "overtimeMinutes": overtime_minutes, "overtimePay": overtime_pay, "attendanceBonus": attendance_bonus, "travelRevenue": travel_revenue, "travelRevenueBonus": travel_revenue_bonus, "fuelSavingBonus": fuel_saving_bonus, "fuelOveruseCharge": fuel_overuse_charge, "deductions": deductions, "totalDeduction": total_deduction, "grossSalary": gross_salary, "totalSalary": net_salary, "bankName": str(salary.get("bankName") or ""), "accountNumber": str(salary.get("accountNumber") or ""), "accountHolder": str(salary.get("accountHolder") or ""), "salaryEffectiveMonth": str(salary.get("effectiveMonth") or ""), "salaryDeclared": bool(salary), "payrollNote": payroll_note})
+        output_rows.append({**driver, "requiredDays": required_days, "workDays": work_days, "baseSalary": base_salary, "allowances": allowances, "totalAllowance": total_allowance, "overtimeMinutes": overtime_minutes, "overtimePay": overtime_pay, "attendanceBonus": attendance_bonus, "holidayWorkDays": holiday_work_days, "holidayBonusPerDay": holiday_bonus_per_day, "holidayBonus": holiday_bonus, "holidayDates": [item["date"] for item in holiday_details], "holidayDetails": holiday_details, "travelRevenue": travel_revenue, "travelRevenueBonus": travel_revenue_bonus, "fuelSavingBonus": fuel_saving_bonus, "fuelOveruseCharge": fuel_overuse_charge, "deductions": deductions, "totalDeduction": total_deduction, "grossSalary": gross_salary, "totalSalary": net_salary, "bankName": str(salary.get("bankName") or ""), "accountNumber": str(salary.get("accountNumber") or ""), "accountHolder": str(salary.get("accountHolder") or ""), "salaryEffectiveMonth": str(salary.get("effectiveMonth") or ""), "salaryDeclared": bool(salary), "payrollNote": payroll_note})
     deduction_types = order_deduction_types([str(item.get("type") or "Khoản trừ").strip() or "Khoản trừ" for row in output_rows for item in (row.get("deductions") or [])])
-    return {"month": month, "viewType": view_type, "dayCount": day_count, "requiredDays": required_days, "bonusAmount": bonus_amount, "travelRevenueTotal": sum(row.get("travelRevenue", 0) for row in output_rows), "travelRevenueBonusRate": round(TRAVEL_REVENUE_BONUS_RATE * 100) if view_type == "travel" else 0, "travelRevenueBonusTotal": sum(row.get("travelRevenueBonus", 0) for row in output_rows), "fuelSavingBonusTotal": sum(row.get("fuelSavingBonus", 0) for row in output_rows), "fuelOveruseChargeTotal": sum(row.get("fuelOveruseCharge", 0) for row in output_rows), "deductionTotal": sum(row.get("totalDeduction", 0) for row in output_rows), "deductionTypes": deduction_types, "overtimeRate": 30_000 if view_type == "cargo" else 0, "rows": output_rows, "locked": False, "lockedBy": "", "lockedAt": "", "fetchedAt": now_iso()}
+    return {"month": month, "viewType": view_type, "dayCount": day_count, "requiredDays": required_days, "bonusAmount": bonus_amount, "holidays": list(holidays_by_date.values()), "holidayBonusTotal": sum(row.get("holidayBonus", 0) for row in output_rows), "travelRevenueTotal": sum(row.get("travelRevenue", 0) for row in output_rows), "travelRevenueBonusRate": round(TRAVEL_REVENUE_BONUS_RATE * 100) if view_type == "travel" else 0, "travelRevenueBonusTotal": sum(row.get("travelRevenueBonus", 0) for row in output_rows), "fuelSavingBonusTotal": sum(row.get("fuelSavingBonus", 0) for row in output_rows), "fuelOveruseChargeTotal": sum(row.get("fuelOveruseCharge", 0) for row in output_rows), "deductionTotal": sum(row.get("totalDeduction", 0) for row in output_rows), "deductionTypes": deduction_types, "overtimeRate": 30_000 if view_type == "cargo" else 0, "rows": output_rows, "locked": False, "lockedBy": "", "lockedAt": "", "fetchedAt": now_iso()}
 
 
 @app.get("/api/accounting/payroll-notes")
@@ -5096,8 +5886,8 @@ def _payroll_detail_sources(month: str, view_type: str, payroll_rows: list[dict[
         fuel_date = parse_existing_date(source.get("ngay"))
         if code not in employee_codes or not fuel_date or fuel_date.strftime("%Y-%m") != month:
             continue
-        liters = max(0.0, float(source.get("soLit") or 0))
-        price = max(0.0, float(source.get("donGiaLit") or 0))
+        liters = max(0.0, localized_number(source.get("soLit")))
+        price = max(0.0, localized_number(source.get("donGiaLit")))
         fuel_by_driver[code].append({
             "date": fuel_date,
             "plate": str(source.get("bienKiemSoat") or ""),
@@ -5105,8 +5895,8 @@ def _payroll_detail_sources(month: str, view_type: str, payroll_rows: list[dict[
             "liters": liters,
             "price": price,
             "amount": round(liters * price),
-            "odometer": max(0.0, float(source.get("soKmTaplo") or 0)),
-            "distance": max(0.0, float(source.get("soKmDaChay") or 0)),
+            "odometer": max(0.0, localized_number(source.get("soKmTaplo"))),
+            "distance": max(0.0, localized_number(source.get("soKmDaChay"))),
             "updatedBy": str(source.get("updatedBy") or source.get("createdBy") or ""),
         })
     for rows in fuel_by_driver.values():
@@ -5327,6 +6117,7 @@ def _build_driver_payslip_workbook(
     section("NGÀY CÔNG")
     metric("Số ngày công chuẩn", driver.get("requiredDays", 0), "ngày")
     metric("Số ngày công đi làm", driver.get("workDays", 0), "ngày")
+    metric("Số ngày lễ đi làm", driver.get("holidayWorkDays", 0), "ngày")
 
     section("THU NHẬP")
     metric("Lương cơ bản", driver.get("baseSalary", 0))
@@ -5337,6 +6128,7 @@ def _build_driver_payslip_workbook(
         metric("Giờ tăng ca", round(float(driver.get("overtimeMinutes") or 0) / 60, 2), "giờ")
         metric("Tiền tăng ca", driver.get("overtimePay", 0))
     metric("Thưởng đủ công", driver.get("attendanceBonus", 0))
+    metric("Thưởng ngày lễ", driver.get("holidayBonus", 0))
     if not is_cargo:
         metric("Doanh thu tháng", driver.get("travelRevenue", 0))
         metric(f"Thưởng doanh thu {payroll_payload.get('travelRevenueBonusRate', 10)}%", driver.get("travelRevenueBonus", 0))
@@ -5364,7 +6156,8 @@ def _build_driver_payslip_workbook(
 
     current_row += 1
     summary.merge_cells(start_row=current_row, start_column=1, end_row=current_row, end_column=4)
-    formula_note = "Công thức: Lương gộp - Tổng khoản trừ." if is_cargo else "Công thức: Lương gộp - Tổng khoản trừ - Thu vượt định mức + Thưởng tiết kiệm xăng."
+    formula_note = "Lương gộp đã gồm thưởng ngày lễ = (Lương cơ bản / Công chuẩn) × 3 × Số ngày lễ đi làm. "
+    formula_note += "Thực nhận = Lương gộp - Tổng khoản trừ." if is_cargo else "Thực nhận = Lương gộp - Tổng khoản trừ - Thu vượt định mức + Thưởng tiết kiệm xăng."
     summary.cell(current_row, 1, formula_note)
     summary.cell(current_row, 1).font = Font(name="Arial", size=10, italic=True, color=muted)
     summary.cell(current_row, 1).alignment = Alignment(wrap_text=True)
@@ -5388,23 +6181,31 @@ def _build_driver_payslip_workbook(
     summary.print_area = f"A1:D{current_row}"
 
     attendance_rows = detail_sources["attendance"].get(code, [])
+    holiday_by_date = {
+        str(item.get("date") or "")[:10]: str(item.get("name") or "Ngày lễ")
+        for item in payroll_payload.get("holidays") or []
+    }
+    holiday_bonus_per_day = int(driver.get("holidayBonusPerDay") or 0)
     attendance = workbook.create_sheet("Chấm công")
     attendance_headers = ["STT", "Ngày", "Thứ", "Dấu công", "Diễn giải", "Công tính lương"]
     attendance_widths = [7, 14, 13, 12, 22, 18]
     if is_cargo:
         attendance_headers += ["Giờ tăng ca", "Tiền tăng ca"]
         attendance_widths += [16, 17]
-    attendance_headers += ["Nguồn"]
-    attendance_widths += [22]
+    attendance_headers += ["Ngày lễ", "Thưởng ngày lễ", "Nguồn"]
+    attendance_widths += [24, 18, 22]
     _style_payslip_detail_sheet(attendance, f"CHẤM CÔNG · {name}", period_label, attendance_headers, attendance_widths)
     for index, item in enumerate(attendance_rows, 1):
         values = [index, item["date"], item["weekday"], item["mark"], item["status"], item["workDay"]]
         if is_cargo:
             values += [item["overtimeMinutes"] / 1440, item["overtimePay"]]
-        values += [item["source"]]
+        date_key = item["date"].strftime("%Y-%m-%d")
+        holiday_name = holiday_by_date.get(date_key, "")
+        values += [holiday_name, holiday_bonus_per_day if holiday_name and item["mark"] == "X" else 0, item["source"]]
         for column, value in enumerate(values, 1):
             attendance.cell(index + 4, column, value)
         attendance.cell(index + 4, 2).number_format = "dd/mm/yyyy"
+        attendance.cell(index + 4, len(attendance_headers) - 1).number_format = money_format
         if is_cargo:
             attendance.cell(index + 4, 7).number_format = "[h]:mm"
             attendance.cell(index + 4, 8).number_format = money_format
@@ -5415,8 +6216,8 @@ def _build_driver_payslip_workbook(
         len(attendance_headers),
         "Tổng số ngày công đi làm",
         5,
-        {6: sum(item["workDay"] for item in attendance_rows)},
-        {6: '#,##0'},
+        {6: sum(item["workDay"] for item in attendance_rows), len(attendance_headers) - 1: int(driver.get("holidayBonus") or 0)},
+        {6: '#,##0', len(attendance_headers) - 1: money_format},
     )
 
     if is_cargo:
@@ -5640,9 +6441,9 @@ def export_accounting_payroll(request: Request, month: str = "", viewType: str =
     if viewType == "cargo":
         headers += ["Giờ tăng ca", "Tiền tăng ca"]
     if viewType == "travel":
-        headers += ["Thưởng đủ công", "Doanh thu tháng", "Thưởng doanh thu 10%", "Thưởng tiết kiệm xăng", "Thu vượt định mức", "Tổng lương", "Ngân hàng", "Số tài khoản", "Chủ tài khoản", "Ghi chú"]
+        headers += ["Thưởng đủ công", "Ngày lễ đi làm", "Thưởng ngày lễ", "Doanh thu tháng", "Thưởng doanh thu 10%", "Thưởng tiết kiệm xăng", "Thu vượt định mức", "Tổng lương", "Ngân hàng", "Số tài khoản", "Chủ tài khoản", "Ghi chú"]
     else:
-        headers += ["Thưởng đủ công", "Tổng lương", "Ngân hàng", "Số tài khoản", "Chủ tài khoản", "Ghi chú"]
+        headers += ["Thưởng đủ công", "Ngày lễ đi làm", "Thưởng ngày lễ", "Tổng lương", "Ngân hàng", "Số tài khoản", "Chủ tài khoản", "Ghi chú"]
     sheet.merge_cells(start_row=1, start_column=1, end_row=1, end_column=len(headers))
     title = sheet.cell(1, 1, f"BẢNG LƯƠNG {'LÁI XE TRAVEL' if viewType == 'travel' else 'XE HÀNG'} THÁNG {month_number:02d}/{year}")
     title.font = Font(bold=True, size=16, color="FFFFFF")
@@ -5702,25 +6503,25 @@ def export_accounting_payroll(request: Request, month: str = "", viewType: str =
         if viewType == "travel":
             salary_note = "" if row["salaryDeclared"] else "Chưa khai báo lương"
             payroll_note = str(row.get("payrollNote") or "").strip()
-            values += [row["attendanceBonus"], row.get("travelRevenue", 0), row.get("travelRevenueBonus", 0), row.get("fuelSavingBonus", 0), row.get("fuelOveruseCharge", 0), row["totalSalary"], row["bankName"], row["accountNumber"], row["accountHolder"], combined_note_text(salary_note, deduction_note_text, payroll_note)]
+            values += [row["attendanceBonus"], row.get("holidayWorkDays", 0), row.get("holidayBonus", 0), row.get("travelRevenue", 0), row.get("travelRevenueBonus", 0), row.get("fuelSavingBonus", 0), row.get("fuelOveruseCharge", 0), row["totalSalary"], row["bankName"], row["accountNumber"], row["accountHolder"], combined_note_text(salary_note, deduction_note_text, payroll_note)]
         else:
             salary_note = "" if row["salaryDeclared"] else "Chưa khai báo lương"
             payroll_note = str(row.get("payrollNote") or "").strip()
-            values += [row["attendanceBonus"], row["totalSalary"], row["bankName"], row["accountNumber"], row["accountHolder"], combined_note_text(salary_note, deduction_note_text, payroll_note)]
+            values += [row["attendanceBonus"], row.get("holidayWorkDays", 0), row.get("holidayBonus", 0), row["totalSalary"], row["bankName"], row["accountNumber"], row["accountHolder"], combined_note_text(salary_note, deduction_note_text, payroll_note)]
         for column, value in enumerate(values, 1):
             cell = sheet.cell(index + 3, column, value)
             cell.border = border
             cell.alignment = Alignment(vertical="center", wrap_text=True)
             if header := headers[column - 1]:
-                if header in {"Lương cơ bản", "Tổng phụ cấp", "Tổng khoản trừ", "Tiền tăng ca", "Thưởng đủ công", "Doanh thu tháng", "Thưởng doanh thu 10%", "Thưởng tiết kiệm xăng", "Thu vượt định mức", "Tổng lương"} or header in allowance_types or header in deduction_types:
+                if header in {"Lương cơ bản", "Tổng phụ cấp", "Tổng khoản trừ", "Tiền tăng ca", "Thưởng đủ công", "Thưởng ngày lễ", "Doanh thu tháng", "Thưởng doanh thu 10%", "Thưởng tiết kiệm xăng", "Thu vượt định mức", "Tổng lương"} or header in allowance_types or header in deduction_types:
                     cell.number_format = '#,##0'
                 elif header == "Giờ tăng ca":
                     cell.number_format = '[h]:mm'
         sheet.row_dimensions[index + 3].height = 24
     widths = [6, 12, 25, 12, 12, 16] + [20] * len(allowance_types) + [16] + [20] * len(deduction_types) + [16]
     widths += [14, 16] if viewType == "cargo" else []
-    widths += [18]
-    widths += [18, 18, 18, 18, 23, 20, 18, 18, 18] if viewType == "travel" else [18, 20, 18, 18, 18]
+    widths += [18, 16, 18]
+    widths += [18, 18, 18, 23, 20, 18, 18, 18, 28] if viewType == "travel" else [20, 18, 18, 18, 28]
     for column in range(1, len(headers) + 1):
         sheet.column_dimensions[get_column_letter(column)].width = widths[column - 1]
     sheet.freeze_panes = "A4"
@@ -7435,25 +8236,7 @@ def update_invoice_status(order_id: str, payload: InvoiceStatusInput, request: R
 
 
 def money_value(value: Any) -> float:
-    text = str(value or "").strip().replace(" ", "").replace("%", "")
-    if not text:
-        return 0.0
-    if "," in text and "." in text:
-        if text.rfind(",") > text.rfind("."):
-            text = text.replace(".", "").replace(",", ".")
-        else:
-            text = text.replace(",", "")
-    elif "," in text:
-        parts = text.split(",")
-        text = "".join(parts) if len(parts[-1]) == 3 else text.replace(",", ".")
-    elif "." in text:
-        parts = text.split(".")
-        if len(parts) > 2 or len(parts[-1]) == 3:
-            text = "".join(parts)
-    try:
-        return float(text)
-    except ValueError:
-        return 0.0
+    return localized_number(value)
 
 
 def excel_safe_value(value: Any) -> Any:
@@ -10483,18 +11266,6 @@ def export_orders_detail_report(tuNgay: str = "", denNgay: str = "") -> Response
 
 @app.post("/api/orders")
 def create_order(request: Request, payload: OrderInput) -> dict[str, Any]:
-    requested_order_id = str(payload.clientOrderId or "").strip().upper()
-    if requested_order_id and not re.fullmatch(r"DH-\d{8}-\d{12}-[0-9A-F]{6}", requested_order_id):
-        raise HTTPException(status_code=422, detail="Mã chống gửi trùng không hợp lệ.")
-    if not requested_order_id:
-        requested_order_id = make_id("DH")
-        payload.clientOrderId = requested_order_id
-    # Request gửi lại chỉ được chạy sau khi request đầu tiên cùng mã đã hoàn tất.
-    with order_create_lock(requested_order_id):
-        return create_order_once(request, payload)
-
-
-def create_order_once(request: Request, payload: OrderInput) -> dict[str, Any]:
     customers = customer_records()
     tours = tour_records()
     vouchers = voucher_records()
@@ -10514,8 +11285,6 @@ def create_order_once(request: Request, payload: OrderInput) -> dict[str, Any]:
 
     customer: dict[str, Any]
     if payload.loaiHopDong == "xe_nguyen_chuyen":
-        payload.diemDon = normalize_order_points(payload.diemDon)
-        payload.diemTra = normalize_order_points(payload.diemTra)
         payload.soDienThoai = validate_customer_phone(payload.soDienThoai, "Số điện thoại khách hàng")
         if not payload.diemDon.strip() or not payload.diemTra.strip():
             raise HTTPException(status_code=422, detail="Vui lÃ²ng nháº­p Ä‘iá»ƒm Ä‘Ã³n vÃ  Ä‘iá»ƒm tráº£.")
@@ -10566,14 +11335,7 @@ def create_order_once(request: Request, payload: OrderInput) -> dict[str, Any]:
     if payload.loaiHopDong == "xe_nguyen_chuyen" and payload.congNo and not payload.congNoChoAi.strip():
         raise HTTPException(status_code=422, detail="Vui lòng nhập đối tượng ghi nhận công nợ.")
 
-    requested_order_id = str(payload.clientOrderId or "").strip().upper()
-    if requested_order_id and not re.fullmatch(r"DH-\d{8}-\d{12}-[0-9A-F]{6}", requested_order_id):
-        raise HTTPException(status_code=422, detail="Mã chống gửi trùng không hợp lệ.")
-    order_id = requested_order_id or make_id("DH")
-    # Cùng một lần bấm lưu luôn dùng cùng clientOrderId. Nếu trình duyệt gửi lại
-    # do mất mạng/timeout, trả kết quả cũ thay vì append thêm một dòng vào Sheet.
-    if find_row_by_id(orders_worksheet(), order_id) is not None:
-        return {"ok": True, "id": order_id, "duplicate": True}
+    order_id = make_id("DH")
     used_voucher_ids: set[str] = set()
     benefit_rows: list[list[Any]] = []
     selected_vouchers: list[dict[str, Any]] = []
@@ -10810,7 +11572,7 @@ def create_order_once(request: Request, payload: OrderInput) -> dict[str, Any]:
     ]
     if len(row) != len(ORDER_HEADERS):
         raise HTTPException(status_code=500, detail="Cấu trúc dữ liệu đơn hàng không hợp lệ.")
-    append_worksheet_row(orders_worksheet(), row)
+    append_order_row_safely(row)
     if new_shared_customer_rows:
         append_worksheet_rows(customers_worksheet(), new_shared_customer_rows)
     if benefit_rows:
@@ -11004,8 +11766,6 @@ def update_order(order_id: str, payload: OrderInput, request: Request) -> dict[s
     tour = row_by_id(tours, payload.hopDongTourId) if payload.hopDongTourId else None
     if tour is None:
         raise HTTPException(status_code=404, detail="Không tìm thấy hợp đồng/tuyến.")
-    payload.diemDon = normalize_order_points(payload.diemDon)
-    payload.diemTra = normalize_order_points(payload.diemTra)
     if not payload.diemDon.strip() or not payload.diemTra.strip():
         raise HTTPException(status_code=422, detail="Vui lòng nhập điểm đón và điểm trả.")
     if payload.giaTien <= 0:
@@ -11206,7 +11966,6 @@ def assign_order_vehicle(order_id: str, payload: AssignVehicleInput, request: Re
             shared_row["ngayGioDi"] = stored_start
             shared_row["ngayGioDuKienKetThuc"] = payload.ngayGioDuKienKetThuc
             update_row_by_headers(shared_worksheet, shared_row_number, SHARED_RIDE_HEADERS, shared_row)
-        soft_delete_older_duplicate_rows(worksheet, ORDER_HEADERS, order_id, row_number, request)
         return {"ok": True, "id": order_id}
 
     roster_vehicle = roster_vehicle_by_plate(payload.bienKiemSoat, date_key(start_at))
@@ -11275,7 +12034,6 @@ def assign_order_vehicle(order_id: str, payload: AssignVehicleInput, request: Re
         shared_row["ngayGioDuKienKetThuc"] = payload.ngayGioDuKienKetThuc
         update_row_by_headers(shared_worksheet, shared_row_number, SHARED_RIDE_HEADERS, shared_row)
 
-    soft_delete_older_duplicate_rows(worksheet, ORDER_HEADERS, order_id, row_number, request)
     return {"ok": True, "id": order_id}
 
 
@@ -11287,7 +12045,7 @@ def complete_order(order_id: str, payload: CompleteOrderInput, request: Request)
         raise HTTPException(status_code=404, detail="Không tìm thấy đơn hàng.")
     order = row_by_id(worksheet_records(worksheet, ORDER_HEADERS), order_id)
     if order and order_is_done(order):
-        raise HTTPException(status_code=409, detail="Đơn hàng đã hoàn thành, không thể thao tác lại.")
+        raise HTTPException(status_code=409, detail="ÄÆ¡n hÃ ng Ä‘Ã£ hoÃ n thÃ nh, khÃ´ng thá»ƒ thao tÃ¡c láº¡i.")
     if order and not (str(order.get("bienKiemSoat") or "").strip() and str(order.get("ngayGioDi") or "").strip()):
         raise HTTPException(status_code=422, detail="Đơn hàng chưa điều xe, chưa thể hoàn thành.")
     if order and normalize_text(order.get("trangThaiGuiTaiXe")) != "da gui tai xe":
@@ -11308,7 +12066,6 @@ def complete_order(order_id: str, payload: CompleteOrderInput, request: Request)
     mark_order_updated(updated_order, request)
     update_row_by_headers(worksheet, row_number, ORDER_HEADERS, updated_order)
     log_action(request, "complete_order", "order", order_id, before=order, after=updated_order)
-    soft_delete_older_duplicate_rows(worksheet, ORDER_HEADERS, order_id, row_number, request)
     return {"ok": True, "id": order_id}
 
 
@@ -11335,7 +12092,6 @@ def update_driver_notification_status(
         before=before_order,
         after=order,
     )
-    soft_delete_older_duplicate_rows(worksheet, ORDER_HEADERS, order_id, row_number, request)
     return {"ok": True, "id": order_id, "trangThaiGuiTaiXe": payload.trangThaiGuiTaiXe}
 
 
@@ -11369,7 +12125,6 @@ def update_order_remittance_status(
     mark_order_updated(order, request)
     update_row_by_headers(worksheet, row_number, ORDER_HEADERS, order)
     log_action(request, "update_remittance_status", "order", order_id, before=before, after=order)
-    soft_delete_older_duplicate_rows(worksheet, ORDER_HEADERS, order_id, row_number, request)
     return {
         "ok": True,
         "id": order_id,
