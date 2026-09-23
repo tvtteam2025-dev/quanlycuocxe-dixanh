@@ -6304,7 +6304,7 @@ def _build_driver_payslip_workbook(
 
     revenue_rows = detail_sources["revenue"].get(code, [])
     revenue = workbook.create_sheet("Doanh thu theo ngày")
-    revenue_headers = ["STT", "Ngày giờ đi", "Mã đơn", "Khách hàng", "Tuyến", "BSX", "Giá chuyến", "Phụ thu", "Giảm giá", "Ưu đãi", "Ưu đãi tính DT lái xe", "Doanh thu tính thưởng", "Trạng thái"]
+    revenue_headers = ["STT", "Ngày giờ đi", "Mã đơn", "Khách hàng", "Tuyến", "BSX", "Giá chuyến", "Phụ thu", "Giảm giá", "Ưu đãi", "Tính doanh thu thưởng lái xe", "Doanh thu tính thưởng", "Trạng thái"]
     _style_payslip_detail_sheet(revenue, f"DOANH THU THEO NGÀY · {name}", f"{period_label} · Tổng doanh thu tính thưởng {round(driver.get('travelRevenue', 0)):,} VNĐ", revenue_headers, [7, 19, 24, 22, 34, 14, 16, 14, 14, 14, 21, 22, 18])
     for index, item in enumerate(revenue_rows, 1):
         values = [index, item["departure"], item["orderId"], item["customer"], item["route"], item["plate"], item["gross"], item["surcharge"], item["discount"], item["benefit"], item["benefitDriverRevenue"], item["revenue"], item["status"]]
@@ -9110,7 +9110,7 @@ def export_driver_revenue_report(tuNgay: str = "", denNgay: str = "") -> Respons
     headers = [
         "STT", "Ngày giờ", "Mã đơn", "Lái xe", "Biển số", "Khách hàng", "Tuyến",
         "Loại đơn", "Giá tiền", "Phụ thu", "Giảm giá thủ công", "Voucher/khuyến mãi",
-        "Ưu đãi tính DT lái xe", "Doanh thu lái xe", "VAT", "Đã cọc", "Công nợ", "Thực thu", "Trạng thái công nợ", "Đối tượng công nợ",
+        "Tính doanh thu thưởng lái xe", "Doanh thu lái xe", "VAT", "Đã cọc", "Công nợ", "Thực thu", "Trạng thái công nợ", "Đối tượng công nợ",
         "Đơn vị vận hành xe", "Hoa hồng xe thương quyền", "Ghi chú",
     ]
     widths = [7, 18, 24, 24, 14, 24, 28, 16, 15, 15, 18, 20, 21, 18, 14, 14, 16, 16, 18, 28, 24, 24, 32]
@@ -9175,7 +9175,7 @@ def export_driver_revenue_report(tuNgay: str = "", denNgay: str = "") -> Respons
     summary_sheet = workbook.create_sheet("Tổng hợp lái xe")
     summary_headers = [
         "STT", "Lái xe", "Biển số", "Đơn vị vận hành xe", "Số đơn hàng", "Tổng giá tiền", "Tổng phụ thu",
-        "Tổng giảm giá thủ công", "Tổng voucher/khuyến mãi", "Tổng ưu đãi tính DT lái xe", "Tổng doanh thu lái xe", "Tổng VAT",
+        "Tổng giảm giá thủ công", "Tổng voucher/khuyến mãi", "Tổng tính doanh thu thưởng lái xe", "Tổng doanh thu lái xe", "Tổng VAT",
         "Tổng hoa hồng xe thương quyền phải nộp",
         "Tổng đã cọc", "Tổng thực thu", "Số đơn công nợ", "Tổng số tiền công nợ",
     ]
