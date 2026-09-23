@@ -473,6 +473,7 @@ VOUCHER_HEADERS = [
     "createdAt",
     "deletedAt",
     "deletedBy",
+    "tinhDoanhThuLaiXe",
 ]
 
 PROMOTION_HEADERS = [
@@ -487,6 +488,7 @@ PROMOTION_HEADERS = [
     "createdAt",
     "deletedAt",
     "deletedBy",
+    "tinhDoanhThuLaiXe",
 ]
 
 ORDER_BENEFIT_HEADERS = [
@@ -505,6 +507,7 @@ ORDER_BENEFIT_HEADERS = [
     "trangThai",
     "deletedAt",
     "deletedBy",
+    "tinhDoanhThuLaiXe",
 ]
 
 USER_HEADERS = [
@@ -1353,6 +1356,7 @@ class VoucherInput(BaseModel):
     ngayHetHan: str = ""
     trangThai: str = "Đang áp dụng"
     ghiChu: str = ""
+    tinhDoanhThuLaiXe: bool = False
 
 
 class VoucherBatchInput(BaseModel):
@@ -1364,6 +1368,7 @@ class VoucherBatchInput(BaseModel):
     ngayBatDau: str = ""
     ngayHetHan: str = ""
     ghiChu: str = ""
+    tinhDoanhThuLaiXe: bool = False
 
 
 class PromotionInput(BaseModel):
@@ -1374,6 +1379,7 @@ class PromotionInput(BaseModel):
     ngayHetHan: str = ""
     trangThai: str = "Đang áp dụng"
     ghiChu: str = ""
+    tinhDoanhThuLaiXe: bool = False
 
 
 class NotificationReadInput(BaseModel):
@@ -1555,6 +1561,9 @@ def get_worksheet(sheet_name: str, headers: list[str]) -> Any:
             ORDERS_SHEET_NAME,
             SHARED_RIDE_SHEET_NAME,
             ORDER_HISTORY_SHEET_NAME,
+            VOUCHERS_SHEET_NAME,
+            PROMOTIONS_SHEET_NAME,
+            ORDER_BENEFITS_SHEET_NAME,
         }
         if sheet_name in protected_business_sheets:
             # Chỉ được phép bổ sung cột mới ở cuối. Không bao giờ đổi tên, đổi thứ
@@ -1902,8 +1911,13 @@ def all_order_records(force_refresh: bool = False) -> list[dict[str, Any]]:
             status_code=409,
             detail=f"Phát hiện ID đơn hàng bị trùng ({sample}). Hệ thống đã khóa thao tác để tránh ghi đè dữ liệu.",
         )
+    driver_revenue_benefits = order_driver_revenue_benefit_totals()
     for record in records:
         record["giaNiemYet"] = record.get("GiaNiemYet", "")
+        record["uuDaiTinhDoanhThuLaiXe"] = driver_revenue_benefits.get(
+            str(record.get("id") or "").strip(),
+            0,
+        )
     customers_by_id = {
         str(customer.get("id") or "").strip(): customer
         for customer in customer_records()
@@ -2753,6 +2767,16 @@ def benefit_discount(row: dict[str, Any], base_amount: float) -> float:
     return min(value, max(base_amount, 0))
 
 
+def benefit_counts_for_driver_revenue(row: dict[str, Any]) -> bool:
+    return normalize_text(row.get("tinhDoanhThuLaiXe")) in {
+        "co",
+        "yes",
+        "true",
+        "1",
+        "x",
+    }
+
+
 def benefit_key(row: dict[str, Any], kind: str) -> str:
     if kind == "voucher":
         return str(row.get("maVoucher") or row.get("id") or "").strip()
@@ -2836,6 +2860,10 @@ def build_benefit_rows(
                 voucher.get("giaTri", ""),
                 discount,
                 now_iso(),
+                "",
+                "",
+                "",
+                "Có" if benefit_counts_for_driver_revenue(voucher) else "Không",
             ]
         )
 
@@ -2864,6 +2892,10 @@ def build_benefit_rows(
                 promotion.get("giaTri", ""),
                 discount,
                 now_iso(),
+                "",
+                "",
+                "",
+                "Có" if benefit_counts_for_driver_revenue(promotion) else "Không",
             ]
         )
 
@@ -2872,6 +2904,43 @@ def build_benefit_rows(
 
 def order_benefit_records() -> list[dict[str, Any]]:
     return worksheet_records(order_benefits_worksheet(), ORDER_BENEFIT_HEADERS)
+
+
+def order_driver_revenue_benefit_totals() -> dict[str, float]:
+    totals: dict[str, float] = {}
+    for benefit in order_benefit_records():
+        order_id = str(benefit.get("donHangId") or "").strip()
+        if not order_id or not benefit_counts_for_driver_revenue(benefit):
+            continue
+        totals[order_id] = totals.get(order_id, 0) + money_value(benefit.get("soTienGiam"))
+    return totals
+
+
+def preserve_benefit_driver_revenue_snapshots(
+    rows: list[list[Any]],
+    existing_benefits: list[dict[str, Any]],
+) -> None:
+    """Giữ nguyên cờ lịch sử khi sửa đơn nhưng vẫn dùng lại cùng ưu đãi."""
+
+    def snapshot_key(row: dict[str, Any]) -> tuple[str, str, str]:
+        customer_key = str(row.get("khachHangId") or "").strip() or normalize_text(row.get("tenKhach"))
+        benefit_key_value = (
+            str(row.get("uuDaiId") or "").strip()
+            or str(row.get("maUuDai") or "").strip()
+            or normalize_text(row.get("tenUuDai"))
+        )
+        return normalize_text(row.get("loaiUuDai")), customer_key, benefit_key_value
+
+    existing_by_key = {snapshot_key(row): row for row in existing_benefits}
+    flag_index = ORDER_BENEFIT_HEADERS.index("tinhDoanhThuLaiXe")
+    for values in rows:
+        row = {
+            header: values[index] if index < len(values) else ""
+            for index, header in enumerate(ORDER_BENEFIT_HEADERS)
+        }
+        existing = existing_by_key.get(snapshot_key(row))
+        if existing is not None:
+            values[flag_index] = "Có" if benefit_counts_for_driver_revenue(existing) else "Không"
 
 
 def replace_order_benefits(order_id: str, rows: list[list[Any]], deleted_by: str = "system") -> None:
@@ -5874,6 +5943,7 @@ def _payroll_detail_sources(month: str, view_type: str, payroll_rows: list[dict[
             "surcharge": money_value(order.get("phuThu")),
             "discount": money_value(order.get("giamGia")),
             "benefit": money_value(order.get("tongUuDai")),
+            "benefitDriverRevenue": money_value(order.get("uuDaiTinhDoanhThuLaiXe")),
             "revenue": order_driver_revenue(order),
             "status": str(order.get("trangThai") or ""),
         })
@@ -6234,14 +6304,14 @@ def _build_driver_payslip_workbook(
 
     revenue_rows = detail_sources["revenue"].get(code, [])
     revenue = workbook.create_sheet("Doanh thu theo ngày")
-    revenue_headers = ["STT", "Ngày giờ đi", "Mã đơn", "Khách hàng", "Tuyến", "BSX", "Giá chuyến", "Phụ thu", "Giảm giá", "Ưu đãi", "Doanh thu tính thưởng", "Trạng thái"]
-    _style_payslip_detail_sheet(revenue, f"DOANH THU THEO NGÀY · {name}", f"{period_label} · Tổng doanh thu tính thưởng {round(driver.get('travelRevenue', 0)):,} VNĐ", revenue_headers, [7, 19, 24, 22, 34, 14, 16, 14, 14, 14, 22, 18])
+    revenue_headers = ["STT", "Ngày giờ đi", "Mã đơn", "Khách hàng", "Tuyến", "BSX", "Giá chuyến", "Phụ thu", "Giảm giá", "Ưu đãi", "Ưu đãi tính DT lái xe", "Doanh thu tính thưởng", "Trạng thái"]
+    _style_payslip_detail_sheet(revenue, f"DOANH THU THEO NGÀY · {name}", f"{period_label} · Tổng doanh thu tính thưởng {round(driver.get('travelRevenue', 0)):,} VNĐ", revenue_headers, [7, 19, 24, 22, 34, 14, 16, 14, 14, 14, 21, 22, 18])
     for index, item in enumerate(revenue_rows, 1):
-        values = [index, item["departure"], item["orderId"], item["customer"], item["route"], item["plate"], item["gross"], item["surcharge"], item["discount"], item["benefit"], item["revenue"], item["status"]]
+        values = [index, item["departure"], item["orderId"], item["customer"], item["route"], item["plate"], item["gross"], item["surcharge"], item["discount"], item["benefit"], item["benefitDriverRevenue"], item["revenue"], item["status"]]
         for column, value in enumerate(values, 1):
             revenue.cell(index + 4, column, value)
         revenue.cell(index + 4, 2).number_format = "dd/mm/yyyy hh:mm"
-        for column in range(7, 12):
+        for column in range(7, 13):
             revenue.cell(index + 4, column).number_format = money_format
     _finish_payslip_detail_sheet(revenue, len(revenue_rows), len(revenue_headers))
     _append_payslip_total_row(
@@ -6255,9 +6325,10 @@ def _build_driver_payslip_workbook(
             8: sum(item["surcharge"] for item in revenue_rows),
             9: sum(item["discount"] for item in revenue_rows),
             10: sum(item["benefit"] for item in revenue_rows),
-            11: sum(item["revenue"] for item in revenue_rows),
+            11: sum(item["benefitDriverRevenue"] for item in revenue_rows),
+            12: sum(item["revenue"] for item in revenue_rows),
         },
-        {column: money_format for column in range(7, 12)},
+        {column: money_format for column in range(7, 13)},
     )
 
     fuel_rows = detail_sources["fuel"].get(code, [])
@@ -7223,6 +7294,9 @@ def create_voucher(payload: VoucherInput) -> dict[str, Any]:
             payload.trangThai,
             payload.ghiChu,
             now_iso(),
+            "",
+            "",
+            "Có" if payload.tinhDoanhThuLaiXe else "Không",
         ],
         value_input_option="RAW",
     )
@@ -7294,6 +7368,9 @@ def create_voucher_batch(payload: VoucherBatchInput) -> dict[str, Any]:
                 "Đang áp dụng",
                 batch_note,
                 created_at,
+                "",
+                "",
+                "Có" if payload.tinhDoanhThuLaiXe else "Không",
             ]
         )
     append_worksheet_rows(worksheet, new_rows)
@@ -7403,6 +7480,7 @@ def update_voucher(voucher_id: str, payload: VoucherInput, request: Request) -> 
             "trangThai": payload.trangThai,
             "ghiChu": payload.ghiChu,
             "createdAt": current.get("createdAt") or now_iso(),
+            "tinhDoanhThuLaiXe": "Có" if payload.tinhDoanhThuLaiXe else "Không",
         }
     update_row_by_headers(worksheet, row_number, VOUCHER_HEADERS, updated)
     log_action(request, "update_voucher", "voucher", voucher_id, before=current, after=updated)
@@ -7454,6 +7532,9 @@ def create_promotion(payload: PromotionInput) -> dict[str, Any]:
             payload.trangThai,
             payload.ghiChu,
             now_iso(),
+            "",
+            "",
+            "Có" if payload.tinhDoanhThuLaiXe else "Không",
         ],
         value_input_option="RAW",
     )
@@ -7480,6 +7561,7 @@ def update_promotion(promotion_id: str, payload: PromotionInput, request: Reques
             "trangThai": payload.trangThai,
             "ghiChu": payload.ghiChu,
             "createdAt": current.get("createdAt") or now_iso(),
+            "tinhDoanhThuLaiXe": "Có" if payload.tinhDoanhThuLaiXe else "Không",
         }
     update_row_by_headers(worksheet, row_number, PROMOTION_HEADERS, updated)
     log_action(request, "update_promotion", "promotion", promotion_id, before=current, after=updated)
@@ -8258,17 +8340,31 @@ def driver_revenue_amount(
     benefit_discount: Any = 0,
     vat: Any = 0,
     surcharge: Any = 0,
+    benefit_driver_revenue: Any = 0,
 ) -> float:
     return max(
         money_value(gross)
         + money_value(surcharge)
         - money_value(manual_discount)
-        - money_value(benefit_discount),
+        - money_value(benefit_discount)
+        + money_value(benefit_driver_revenue),
         0,
     )
 
 
 def order_driver_revenue(row: dict[str, Any]) -> float:
+    return driver_revenue_amount(
+        row.get("giaTien"),
+        row.get("giamGia"),
+        row.get("tongUuDai"),
+        row.get("thueVAT"),
+        row.get("phuThu"),
+        row.get("uuDaiTinhDoanhThuLaiXe"),
+    )
+
+
+def order_customer_revenue(row: dict[str, Any]) -> float:
+    """Số tiền trước VAT khách thực trả; không cộng lại ưu đãi tính thưởng lái xe."""
     return driver_revenue_amount(
         row.get("giaTien"),
         row.get("giamGia"),
@@ -8282,7 +8378,7 @@ def order_driver_remittance(row: dict[str, Any]) -> float:
     if normalize_text(row.get("congNo")) in {"co", "yes", "true", "1"}:
         return 0
     deposit = money_value(row.get("daCoc"))
-    normal_due = max(order_driver_revenue(row) + money_value(row.get("thueVAT")) - deposit, 0)
+    normal_due = max(order_customer_revenue(row) + money_value(row.get("thueVAT")) - deposit, 0)
     commission = money_value(row.get("soTienNopLai"))
     if "thuong quyen" in normalize_text(row.get("loaiXeDieuDong")) and commission > 0:
         return commission
@@ -8436,7 +8532,7 @@ def export_driver_remittance_report(ngay: str = "") -> Response:
         gross = money_value(row.get("giaTien"))
         surcharge = money_value(row.get("phuThu"))
         discount = money_value(row.get("giamGia")) + money_value(row.get("tongUuDai"))
-        revenue = order_driver_revenue(row)
+        revenue = order_customer_revenue(row)
         vat = money_value(row.get("thueVAT"))
         deposit = money_value(row.get("daCoc"))
         debt = max(revenue + vat - deposit, 0) if normalize_text(row.get("congNo")) in {"co", "yes", "true", "1"} else 0
@@ -8881,7 +8977,34 @@ def export_driver_revenue_report(tuNgay: str = "", denNgay: str = "") -> Respons
     for passenger in shared_rows:
         order_id = str(passenger.get("donHangId") or "")
         shared_gross_by_order[order_id] = shared_gross_by_order.get(order_id, 0) + money_value(passenger.get("soTien"))
+    counted_benefits_by_customer_id: dict[tuple[str, str], float] = {}
+    counted_benefits_by_customer_name: dict[tuple[str, str], float] = {}
+    for benefit in order_benefit_records():
+        if not benefit_counts_for_driver_revenue(benefit):
+            continue
+        order_id = str(benefit.get("donHangId") or "").strip()
+        amount = money_value(benefit.get("soTienGiam"))
+        customer_id = str(benefit.get("khachHangId") or "").strip()
+        customer_name = normalize_text(benefit.get("tenKhach"))
+        if order_id and customer_id:
+            key = (order_id, customer_id)
+            counted_benefits_by_customer_id[key] = counted_benefits_by_customer_id.get(key, 0) + amount
+        if order_id and customer_name:
+            key = (order_id, customer_name)
+            counted_benefits_by_customer_name[key] = counted_benefits_by_customer_name.get(key, 0) + amount
     rows: list[list[Any]] = []
+
+    def shared_counted_benefit(passenger: dict[str, Any]) -> float:
+        order_id = str(passenger.get("donHangId") or "").strip()
+        customer_id = str(passenger.get("khachHangId") or "").strip()
+        if order_id and customer_id:
+            matched = counted_benefits_by_customer_id.get((order_id, customer_id))
+            if matched is not None:
+                return matched
+        return counted_benefits_by_customer_name.get(
+            (order_id, normalize_text(passenger.get("hoTen"))),
+            0,
+        )
 
     def append_report_row(
         order: dict[str, Any],
@@ -8895,13 +9018,22 @@ def export_driver_revenue_report(tuNgay: str = "", denNgay: str = "") -> Respons
         deposit: Any,
         date_source: Any,
         debt_source: dict[str, Any] | None = None,
+        benefit_driver_revenue: Any = 0,
     ) -> None:
         if "huy" in normalize_text(order.get("trangThai")) or not in_range(date_source):
             return
-        driver_revenue = driver_revenue_amount(gross, manual, benefits, vat, surcharge)
+        customer_revenue = driver_revenue_amount(gross, manual, benefits, vat, surcharge)
+        driver_revenue = driver_revenue_amount(
+            gross,
+            manual,
+            benefits,
+            vat,
+            surcharge,
+            benefit_driver_revenue,
+        )
         debt_record = debt_source or order
         is_debt = normalize_text(debt_record.get("congNo")) in {"co", "yes", "true", "1"}
-        actual = 0 if is_debt else max(driver_revenue + money_value(vat) - money_value(deposit), 0)
+        actual = 0 if is_debt else max(customer_revenue + money_value(vat) - money_value(deposit), 0)
         commission = 0.0
         if "thuong quyen" in normalize_text(order.get("loaiXeDieuDong")):
             commission = money_value(order.get("soTienNopLai"))
@@ -8932,6 +9064,7 @@ def export_driver_revenue_report(tuNgay: str = "", denNgay: str = "") -> Respons
                 money_value(surcharge),
                 commission,
                 debt_record.get("ghiChu") or order.get("ghiChu") or "",
+                money_value(benefit_driver_revenue),
             ]
         )
 
@@ -8949,6 +9082,7 @@ def export_driver_revenue_report(tuNgay: str = "", denNgay: str = "") -> Respons
             order.get("phuThu"),
             order.get("daCoc"),
             order.get("ngayGioDi") or order.get("createdAt"),
+            benefit_driver_revenue=order.get("uuDaiTinhDoanhThuLaiXe"),
         )
     for passenger in shared_rows:
         order = orders_by_id.get(str(passenger.get("donHangId") or ""))
@@ -8966,6 +9100,7 @@ def export_driver_revenue_report(tuNgay: str = "", denNgay: str = "") -> Respons
             passenger.get("daCoc"),
             passenger.get("ngayGioDi") or order.get("ngayGioDi") or passenger.get("createdAt"),
             passenger,
+            shared_counted_benefit(passenger),
         )
     rows.sort(key=lambda row: (str(row[3]), row[0]))
 
@@ -8975,10 +9110,10 @@ def export_driver_revenue_report(tuNgay: str = "", denNgay: str = "") -> Respons
     headers = [
         "STT", "Ngày giờ", "Mã đơn", "Lái xe", "Biển số", "Khách hàng", "Tuyến",
         "Loại đơn", "Giá tiền", "Phụ thu", "Giảm giá thủ công", "Voucher/khuyến mãi",
-        "Doanh thu lái xe", "VAT", "Đã cọc", "Công nợ", "Thực thu", "Trạng thái công nợ", "Đối tượng công nợ",
+        "Ưu đãi tính DT lái xe", "Doanh thu lái xe", "VAT", "Đã cọc", "Công nợ", "Thực thu", "Trạng thái công nợ", "Đối tượng công nợ",
         "Đơn vị vận hành xe", "Hoa hồng xe thương quyền", "Ghi chú",
     ]
-    widths = [7, 18, 24, 24, 14, 24, 28, 16, 15, 15, 18, 20, 18, 14, 14, 16, 16, 18, 28, 24, 24, 32]
+    widths = [7, 18, 24, 24, 14, 24, 28, 16, 15, 15, 18, 20, 21, 18, 14, 14, 16, 16, 18, 28, 24, 24, 32]
     for index, width in enumerate(widths, start=1):
         sheet.column_dimensions[get_column_letter(index)].width = width
     sheet.merge_cells(start_row=1, start_column=1, end_row=1, end_column=len(headers))
@@ -9000,27 +9135,28 @@ def export_driver_revenue_report(tuNgay: str = "", denNgay: str = "") -> Respons
         cell.border = border
         cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
     for index, row in enumerate(rows, start=1):
+        customer_revenue = driver_revenue_amount(row[8], row[9], row[10], row[11], row[18])
         debt_amount = (
-            max(money_value(row[12]) + money_value(row[11]) - money_value(row[13]), 0)
+            max(customer_revenue + money_value(row[11]) - money_value(row[13]), 0)
             if normalize_text(row[15]) == "co"
             else 0
         )
         values = (
             [index] + row[1:9]
-            + [row[18], row[9], row[10], row[12], row[11], row[13], debt_amount, row[14]]
+            + [row[18], row[9], row[10], row[21], row[12], row[11], row[13], debt_amount, row[14]]
             + row[15:18] + [row[19], row[20]]
         )
         for column, value in enumerate(values, start=1):
             cell = sheet.cell(index + 4, column, value)
             cell.border = border
             cell.alignment = Alignment(vertical="top", wrap_text=True)
-            if 9 <= column <= 17 or column == 21:
+            if 9 <= column <= 18 or column == 22:
                 cell.number_format = '#,##0'
     total_row = len(rows) + 5
     sheet.merge_cells(start_row=total_row, start_column=1, end_row=total_row, end_column=8)
     total_label = sheet.cell(total_row, 1, "TỔNG CỘNG")
     total_label.alignment = Alignment(horizontal="right", vertical="center")
-    for column in [9, 10, 11, 12, 13, 14, 15, 16, 17, 21]:
+    for column in [9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 22]:
         letter = get_column_letter(column)
         cell = sheet.cell(
             total_row,
@@ -9034,16 +9170,16 @@ def export_driver_revenue_report(tuNgay: str = "", denNgay: str = "") -> Respons
         cell.fill = fill
         cell.border = border
     sheet.freeze_panes = "A5"
-    sheet.auto_filter.ref = f"A4:V{max(total_row - 1, 4)}"
+    sheet.auto_filter.ref = f"A4:W{max(total_row - 1, 4)}"
 
     summary_sheet = workbook.create_sheet("Tổng hợp lái xe")
     summary_headers = [
         "STT", "Lái xe", "Biển số", "Đơn vị vận hành xe", "Số đơn hàng", "Tổng giá tiền", "Tổng phụ thu",
-        "Tổng giảm giá thủ công", "Tổng voucher/khuyến mãi", "Tổng doanh thu lái xe", "Tổng VAT",
+        "Tổng giảm giá thủ công", "Tổng voucher/khuyến mãi", "Tổng ưu đãi tính DT lái xe", "Tổng doanh thu lái xe", "Tổng VAT",
         "Tổng hoa hồng xe thương quyền phải nộp",
         "Tổng đã cọc", "Tổng thực thu", "Số đơn công nợ", "Tổng số tiền công nợ",
     ]
-    summary_widths = [7, 28, 18, 24, 14, 18, 16, 22, 24, 16, 22, 28, 16, 18, 16, 22]
+    summary_widths = [7, 28, 18, 24, 14, 18, 16, 22, 24, 25, 16, 22, 28, 16, 18, 16, 22]
     for index, width in enumerate(summary_widths, start=1):
         summary_sheet.column_dimensions[get_column_letter(index)].width = width
     summary_sheet.merge_cells(start_row=1, start_column=1, end_row=1, end_column=len(summary_headers))
@@ -9072,6 +9208,7 @@ def export_driver_revenue_report(tuNgay: str = "", denNgay: str = "") -> Respons
                 "surcharge": 0.0,
                 "manual": 0.0,
                 "benefits": 0.0,
+                "counted_benefits": 0.0,
                 "vat": 0.0,
                 "revenue": 0.0,
                 "deposit": 0.0,
@@ -9092,6 +9229,7 @@ def export_driver_revenue_report(tuNgay: str = "", denNgay: str = "") -> Respons
         item["surcharge"] += money_value(row[18])
         item["manual"] += money_value(row[9])
         item["benefits"] += money_value(row[10])
+        item["counted_benefits"] += money_value(row[21])
         item["vat"] += money_value(row[11])
         item["revenue"] += money_value(row[12])
         item["deposit"] += money_value(row[13])
@@ -9103,8 +9241,9 @@ def export_driver_revenue_report(tuNgay: str = "", denNgay: str = "") -> Respons
             item["commission_orders"].add(order_id)
         if normalize_text(row[15]) == "co" and row[2]:
             item["debt_orders"].add(str(row[2]))
+            customer_revenue = driver_revenue_amount(row[8], row[9], row[10], row[11], row[18])
             item["debt_amount"] += max(
-                money_value(row[12]) + money_value(row[11]) - money_value(row[13]),
+                customer_revenue + money_value(row[11]) - money_value(row[13]),
                 0,
             )
 
@@ -9119,6 +9258,7 @@ def export_driver_revenue_report(tuNgay: str = "", denNgay: str = "") -> Respons
             item["surcharge"],
             item["manual"],
             item["benefits"],
+            item["counted_benefits"],
             item["revenue"],
             item["vat"],
             item["commission"],
@@ -9131,11 +9271,11 @@ def export_driver_revenue_report(tuNgay: str = "", denNgay: str = "") -> Respons
             cell = summary_sheet.cell(index + 4, column, excel_safe_value(value))
             cell.border = border
             cell.alignment = Alignment(vertical="top", wrap_text=True)
-            if 6 <= column <= 14 or column == 16:
+            if 6 <= column <= 15 or column == 17:
                 cell.number_format = '#,##0'
     summary_total_row = len(driver_totals) + 5
     summary_sheet.cell(summary_total_row, 5, "Tổng cộng").font = Font(bold=True)
-    for column in range(6, 17):
+    for column in range(6, 18):
         letter = get_column_letter(column)
         summary_sheet.cell(
             summary_total_row,
@@ -9143,7 +9283,7 @@ def export_driver_revenue_report(tuNgay: str = "", denNgay: str = "") -> Respons
             f"=SUM({letter}5:{letter}{summary_total_row - 1})" if driver_totals else 0,
         ).number_format = '#,##0'
     summary_sheet.freeze_panes = "A5"
-    summary_sheet.auto_filter.ref = f"A4:P{max(summary_total_row - 1, 4)}"
+    summary_sheet.auto_filter.ref = f"A4:Q{max(summary_total_row - 1, 4)}"
     output = BytesIO()
     workbook.save(output)
     output.seek(0)
@@ -11612,8 +11752,13 @@ def update_shared_order(
     new_customer_rows: list[list[Any]] = []
     vouchers = voucher_records()
     promotions = promotion_records()
+    all_benefit_usage = order_benefit_records()
+    existing_benefit_usage = [
+        item for item in all_benefit_usage
+        if str(item.get("donHangId") or "") == str(order_id)
+    ]
     benefit_usage = [
-        item for item in order_benefit_records()
+        item for item in all_benefit_usage
         if str(item.get("donHangId") or "") != str(order_id)
     ]
     used_voucher_ids: set[str] = set()
@@ -11727,6 +11872,7 @@ def update_shared_order(
     append_worksheet_rows(shared_worksheet, shared_rows)
     if new_customer_rows:
         append_worksheet_rows(customers_worksheet(), new_customer_rows)
+    preserve_benefit_driver_revenue_snapshots(benefit_rows, existing_benefit_usage)
     replace_order_benefits(order_id, benefit_rows, current_user_display_name(request))
     log_action(request, "update_order", "order", order_id, before=before, after=order)
     return {"ok": True, "id": order_id}
@@ -11816,6 +11962,13 @@ def update_order(order_id: str, payload: OrderInput, request: Request) -> dict[s
         other_benefit_usage,
         set(),
         percent_base_amount=payload.giaTien,
+    )
+    preserve_benefit_driver_revenue_snapshots(
+        benefit_rows,
+        [
+            item for item in all_benefit_usage
+            if str(item.get("donHangId") or "") == str(order_id)
+        ],
     )
     revenue_amount = max(payload.giaTien - manual_discount - benefit_discount, 0) + payload.phuThu
     vat_amount = round(revenue_amount * 0.08) if payload.yeuCauHoaDon else 0
