@@ -4092,7 +4092,7 @@ function openVoucherDetails(voucherId) {
     <label><span>Ngày hết hạn</span><input name="ngayHetHan" class="date-input" inputmode="numeric" value="${escapeHtml(row.ngayHetHan || "")}" /></label>
     <label class="checkbox-line"><input name="khongGioiHanHanDung" type="checkbox" ${row.ngayHetHan ? "" : "checked"} /><span>Không giới hạn hạn sử dụng</span></label>
     <label><span>Trạng thái</span><select name="trangThai"><option ${row.trangThai === "Đang áp dụng" ? "selected" : ""}>Đang áp dụng</option><option ${row.trangThai === "Tạm ngưng" ? "selected" : ""}>Tạm ngưng</option></select></label>
-    <label class="checkbox-line full"><input name="tinhDoanhThuLaiXe" type="checkbox" ${benefitCountsForDriverRevenue(row) ? "checked" : ""} /><span>Tính phần ưu đãi này vào doanh thu của lái xe</span></label>
+    <label class="checkbox-line full"><input name="tinhDoanhThuLaiXe" type="checkbox" ${benefitCountsForDriverRevenue(row) ? "checked" : ""} /><span>Tính doanh thu thưởng lái xe</span></label>
     <label class="full"><span>Ghi chú</span><textarea name="ghiChu" rows="3">${escapeHtml(row.ghiChu || "")}</textarea></label>
   `;
   els.detailsEditor.querySelectorAll("input, select, textarea").forEach((field) => {
@@ -4126,7 +4126,7 @@ function openPromotionDetails(promotionId) {
     <label><span>Ngày bắt đầu</span><input name="ngayBatDau" class="date-input" inputmode="numeric" value="${escapeHtml(row.ngayBatDau || "")}" /></label>
     <label><span>Ngày hết hạn</span><input name="ngayHetHan" class="date-input" inputmode="numeric" value="${escapeHtml(row.ngayHetHan || "")}" /></label>
     <label><span>Trạng thái</span><select name="trangThai"><option ${row.trangThai === "Đang áp dụng" ? "selected" : ""}>Đang áp dụng</option><option ${row.trangThai === "Tạm ngưng" ? "selected" : ""}>Tạm ngưng</option></select></label>
-    <label class="checkbox-line full"><input name="tinhDoanhThuLaiXe" type="checkbox" ${benefitCountsForDriverRevenue(row) ? "checked" : ""} /><span>Tính phần ưu đãi này vào doanh thu của lái xe</span></label>
+    <label class="checkbox-line full"><input name="tinhDoanhThuLaiXe" type="checkbox" ${benefitCountsForDriverRevenue(row) ? "checked" : ""} /><span>Tính doanh thu thưởng lái xe</span></label>
     <label class="full"><span>Ghi chú</span><textarea name="ghiChu" rows="3">${escapeHtml(row.ghiChu || "")}</textarea></label>
   `;
   els.detailsEditor.querySelectorAll("input, select, textarea").forEach((field) => {
