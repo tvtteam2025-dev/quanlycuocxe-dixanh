@@ -351,6 +351,7 @@
                     <th>Giá trị</th>
                     <th>Hiệu lực</th>
                     <th>Trạng thái</th>
+                    <th>Tính DT lái xe</th>
                     <th>Khách/đơn đã dùng</th>
                   </tr>
                 </thead>
@@ -378,6 +379,7 @@
                     <th>Giá trị</th>
                     <th>Hiệu lực</th>
                     <th>Trạng thái</th>
+                    <th>Tính DT lái xe</th>
                     <th>Ghi chú</th>
                   </tr>
                 </thead>
@@ -1138,6 +1140,10 @@
               <option>Tạm ngưng</option>
             </select>
           </label>
+          <label class="checkbox-line full">
+            <input name="tinhDoanhThuLaiXe" type="checkbox" />
+            <span>Tính phần ưu đãi này vào doanh thu của lái xe</span>
+          </label>
           <label class="full">
             <span>Ghi chú</span>
             <textarea name="ghiChu" rows="3"></textarea>
@@ -1195,6 +1201,10 @@
             <span>Ngày hết hạn</span>
             <input name="ngayHetHan" class="date-input" inputmode="numeric" placeholder="dd/MM/yyyy" />
           </label>
+          <label class="checkbox-line full">
+            <input name="tinhDoanhThuLaiXe" type="checkbox" />
+            <span>Tính phần ưu đãi này vào doanh thu của lái xe</span>
+          </label>
           <label class="full">
             <span>Ghi chú</span>
             <textarea name="ghiChu" rows="3"></textarea>
@@ -1245,6 +1255,10 @@
               <option>Đang áp dụng</option>
               <option>Tạm ngưng</option>
             </select>
+          </label>
+          <label class="checkbox-line full">
+            <input name="tinhDoanhThuLaiXe" type="checkbox" />
+            <span>Tính phần ưu đãi này vào doanh thu của lái xe</span>
           </label>
           <label class="full">
             <span>Ghi chú</span>
@@ -1705,6 +1719,6 @@
       </form>
     </dialog>
 
-    <script src="/static/app.js?v=list-price-final-column-20260916" type="module"></script>
+    <script src="/static/app.js?v=benefit-driver-revenue-20260923" type="module"></script>
   </body>
 </html>

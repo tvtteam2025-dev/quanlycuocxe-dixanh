@@ -1920,6 +1920,10 @@ function benefitValueText(row) {
   return value || "0";
 }
 
+function benefitCountsForDriverRevenue(row) {
+  return ["co", "yes", "true", "1", "x"].includes(normalize(row?.tinhDoanhThuLaiXe));
+}
+
 function benefitKey(row, kind) {
   if (kind === "voucher") return String(row.maVoucher || row.id || "");
   return String(row.id || row.tenChuongTrinh || "");
@@ -2131,11 +2135,12 @@ function renderVouchers() {
             <td>${escapeHtml(benefitValueText(row))}</td>
             <td>${escapeHtml(row.ngayBatDau || row.ngayHetHan ? [row.ngayBatDau, row.ngayHetHan || "Không giới hạn"].filter(Boolean).join(" - ") : "Không giới hạn")}</td>
             <td><span class="pill ${normalize(row.trangThaiSuDung).includes("da su dung") ? "done" : benefitIsSelectable(row) ? "running" : "cancelled"}">${escapeHtml(row.trangThaiSuDung || row.trangThai || "")}</span></td>
+            <td><span class="pill ${benefitCountsForDriverRevenue(row) ? "done" : ""}">${benefitCountsForDriverRevenue(row) ? "Có" : "Không"}</span></td>
             <td>${row.donHangId ? `<strong>${escapeHtml(row.tenKhach || "")}</strong><div class="muted">${escapeHtml(row.donHangId)}</div>` : '<span class="muted">Chưa sử dụng</span>'}</td>
           </tr>
         `,
       )
-      .join("") || `<tr><td colspan="8" class="empty">Chưa có voucher.</td></tr>`;
+      .join("") || `<tr><td colspan="9" class="empty">Chưa có voucher.</td></tr>`;
   const visibleIds = rows.map((row) => String(row.id));
   const selectedVisibleCount = visibleIds.filter((id) => state.selectedVoucherIds.has(id)).length;
   if (els.selectAllVouchersCheckbox) {
@@ -2170,11 +2175,12 @@ function renderPromotions() {
             <td>${escapeHtml(benefitValueText(row))}</td>
             <td>${escapeHtml(row.ngayBatDau || row.ngayHetHan ? [row.ngayBatDau, row.ngayHetHan || "Không giới hạn"].filter(Boolean).join(" - ") : "Không giới hạn")}</td>
             <td><span class="pill ${benefitIsSelectable(row) ? "running" : "cancelled"}">${escapeHtml(row.trangThaiHieuLuc || row.trangThai || "")}</span></td>
+            <td><span class="pill ${benefitCountsForDriverRevenue(row) ? "done" : ""}">${benefitCountsForDriverRevenue(row) ? "Có" : "Không"}</span></td>
             <td>${escapeHtml(row.ghiChu || "")}</td>
           </tr>
         `,
       )
-      .join("") || `<tr><td colspan="6" class="empty">Chưa có chương trình khuyến mãi.</td></tr>`;
+      .join("") || `<tr><td colspan="7" class="empty">Chưa có chương trình khuyến mãi.</td></tr>`;
 }
 
 function renderVehicles() {
@@ -4086,6 +4092,7 @@ function openVoucherDetails(voucherId) {
     <label><span>Ngày hết hạn</span><input name="ngayHetHan" class="date-input" inputmode="numeric" value="${escapeHtml(row.ngayHetHan || "")}" /></label>
     <label class="checkbox-line"><input name="khongGioiHanHanDung" type="checkbox" ${row.ngayHetHan ? "" : "checked"} /><span>Không giới hạn hạn sử dụng</span></label>
     <label><span>Trạng thái</span><select name="trangThai"><option ${row.trangThai === "Đang áp dụng" ? "selected" : ""}>Đang áp dụng</option><option ${row.trangThai === "Tạm ngưng" ? "selected" : ""}>Tạm ngưng</option></select></label>
+    <label class="checkbox-line full"><input name="tinhDoanhThuLaiXe" type="checkbox" ${benefitCountsForDriverRevenue(row) ? "checked" : ""} /><span>Tính phần ưu đãi này vào doanh thu của lái xe</span></label>
     <label class="full"><span>Ghi chú</span><textarea name="ghiChu" rows="3">${escapeHtml(row.ghiChu || "")}</textarea></label>
   `;
   els.detailsEditor.querySelectorAll("input, select, textarea").forEach((field) => {
@@ -4119,6 +4126,7 @@ function openPromotionDetails(promotionId) {
     <label><span>Ngày bắt đầu</span><input name="ngayBatDau" class="date-input" inputmode="numeric" value="${escapeHtml(row.ngayBatDau || "")}" /></label>
     <label><span>Ngày hết hạn</span><input name="ngayHetHan" class="date-input" inputmode="numeric" value="${escapeHtml(row.ngayHetHan || "")}" /></label>
     <label><span>Trạng thái</span><select name="trangThai"><option ${row.trangThai === "Đang áp dụng" ? "selected" : ""}>Đang áp dụng</option><option ${row.trangThai === "Tạm ngưng" ? "selected" : ""}>Tạm ngưng</option></select></label>
+    <label class="checkbox-line full"><input name="tinhDoanhThuLaiXe" type="checkbox" ${benefitCountsForDriverRevenue(row) ? "checked" : ""} /><span>Tính phần ưu đãi này vào doanh thu của lái xe</span></label>
     <label class="full"><span>Ghi chú</span><textarea name="ghiChu" rows="3">${escapeHtml(row.ghiChu || "")}</textarea></label>
   `;
   els.detailsEditor.querySelectorAll("input, select, textarea").forEach((field) => {
@@ -5045,6 +5053,9 @@ els.voucherForm.addEventListener("submit", async (event) => {
     const payload = Object.fromEntries(new FormData(els.voucherForm).entries());
     const id = payload.id;
     delete payload.id;
+    if (payload.khongGioiHanHanDung) payload.ngayHetHan = "";
+    delete payload.khongGioiHanHanDung;
+    payload.tinhDoanhThuLaiXe = Boolean(payload.tinhDoanhThuLaiXe);
     payload.giaTri = payload.loaiGiaTri === "fixed" ? parseMoney(payload.giaTri) : Number(String(payload.giaTri || "0").replace(",", "."));
     await fetchJson(id ? `/api/vouchers/${encodeURIComponent(id)}` : "/api/vouchers", {
       method: id ? "PUT" : "POST",
@@ -5067,6 +5078,7 @@ els.voucherBatchForm.addEventListener("submit", async (event) => {
   els.voucherBatchFormStatus.textContent = "Đang phát hành...";
   try {
     const payload = Object.fromEntries(new FormData(els.voucherBatchForm).entries());
+    payload.tinhDoanhThuLaiXe = Boolean(payload.tinhDoanhThuLaiXe);
     payload.menhGia = payload.loaiGiaTri === "fixed" ? parseMoney(payload.menhGia) : Number(String(payload.menhGia || "0").replace(",", "."));
     payload.soLuong = Number(payload.soLuong || 0);
     await fetchJson("/api/vouchers/batch", {
@@ -5094,6 +5106,7 @@ els.promotionForm.addEventListener("submit", async (event) => {
     delete payload.id;
     if (payload.khongGioiHanHanDung) payload.ngayHetHan = "";
     delete payload.khongGioiHanHanDung;
+    payload.tinhDoanhThuLaiXe = Boolean(payload.tinhDoanhThuLaiXe);
     payload.giaTri = payload.loaiGiaTri === "fixed" ? parseMoney(payload.giaTri) : Number(String(payload.giaTri || "0").replace(",", "."));
     await fetchJson(id ? `/api/promotions/${encodeURIComponent(id)}` : "/api/promotions", {
       method: id ? "PUT" : "POST",
@@ -5854,6 +5867,7 @@ els.detailsForm.addEventListener("submit", async (event) => {
   if (type === "voucher" || type === "promotion") {
     if (payload.khongGioiHanHanDung) payload.ngayHetHan = "";
     delete payload.khongGioiHanHanDung;
+    payload.tinhDoanhThuLaiXe = Boolean(payload.tinhDoanhThuLaiXe);
     payload.giaTri = payload.loaiGiaTri === "fixed" ? parseMoney(payload.giaTri) : Number(String(payload.giaTri || "0").replace(",", "."));
   }
   els.detailsSaveButton.disabled = true;
