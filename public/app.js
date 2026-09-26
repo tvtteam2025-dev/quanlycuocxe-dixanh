@@ -761,6 +761,17 @@ function matches(row, query) {
   return haystack.includes(normalize(query));
 }
 
+function matchesDebtOrder(row, query) {
+  if (!query) return true;
+  const haystack = normalize([
+    row.orderCode || row.id,
+    row.tenKhach,
+    row.soDienThoai,
+    row.congNoChoAi,
+  ].join(" "));
+  return haystack.includes(normalize(query));
+}
+
 function invoiceOrderStatus(row) {
   return String(row?.trangThaiHoaDon || "").trim() || "Chưa xuất";
 }
@@ -2292,7 +2303,7 @@ function renderDebtOrders() {
   const fromDate = nativeDateValue(els.debtReportDateInput?.value || "");
   const toDate = nativeDateValue(els.debtReportDateToInput?.value || "");
   const rows = state.debtOrders
-    .filter((row) => matches(row, state.filters.debtOrder))
+    .filter((row) => matchesDebtOrder(row, state.filters.debtOrder))
     .filter((row) => dateKeyInRange(orderDateKey(row), fromDate, toDate))
     .filter((row) => !state.filters.debtStatus || debtOrderStatus(row) === state.filters.debtStatus);
   const debtTotal = rows.reduce((total, row) => total + parseMoney(row.soTienCongNo), 0);
