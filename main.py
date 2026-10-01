@@ -107,6 +107,7 @@ CSKH_SHIFT_REPORTS_SHEET_NAME = os.getenv("CSKH_SHIFT_REPORTS_SHEET_NAME", "BAO_
 CALENDAR_VEHICLE_ORDER_SHEET_NAME = os.getenv("CALENDAR_VEHICLE_ORDER_SHEET_NAME", "THU_TU_LICH_DIEU_XE")
 CONTRACT_PRICING_SHEET_NAME = os.getenv("CONTRACT_PRICING_SHEET_NAME", "BANG_GIA_HOP_DONG")
 HR_CONTRACTS_SHEET_NAME = os.getenv("HR_CONTRACTS_SHEET_NAME", "HOP_DONG_NHAN_SU")
+COMPANY_STAFF_SHEET_NAME = os.getenv("COMPANY_STAFF_SHEET_NAME", "NHAN_SU_CTY")
 ATTENDANCE_OVERRIDES_SHEET_NAME = os.getenv("ATTENDANCE_OVERRIDES_SHEET_NAME", "DIEU_CHINH_CHAM_CONG")
 ATTENDANCE_OVERRIDE_HEADERS = ["month", "viewType", "employeeCode", "day", "mark", "updatedBy", "updatedAt"]
 PAYROLL_LOCKS_SHEET_NAME = os.getenv("PAYROLL_LOCKS_SHEET_NAME", "CHOT_BANG_LUONG")
@@ -554,6 +555,14 @@ CONTRACT_PRICING_HEADERS = ["id", "configJson", "updatedAt", "updatedBy"]
 HR_CONTRACT_HEADERS = [
     "id", "id_main", "maNV", "hoTen", "soHD", "loaiHD", "chucVu", "chiNhanh",
     "mucLuong", "phuCap", "ngayBatDau", "thoiHanHD", "ngayKetThuc", "congTyDonVi", "trang_thai",
+]
+
+COMPANY_STAFF_HEADERS = [
+    "id", "hoTenMaNV", "maNV", "hoTen", "gioiTinh", "ngaySinh", "soCCCD", "ngayCap",
+    "noiCap", "ngayHetHan", "trinhDoBangCap", "trinhDoHocVan", "chuyenNganh",
+    "tinhTrangHonNhan", "dienThoaiDiDong", "email", "soTaiKhoan", "nganHang",
+    "diaChiThuongTru", "diaChiHienNay", "congTyDonVi", "idHopDong", "trangThaiLamViec",
+    "chucVu", "chiNhanh",
 ]
 
 NUMERIC_SHEET_HEADERS = {
@@ -2010,6 +2019,30 @@ def cskh_shift_reports_worksheet() -> Any:
 
 def calendar_vehicle_order_worksheet() -> Any:
     return get_worksheet(CALENDAR_VEHICLE_ORDER_SHEET_NAME, CALENDAR_VEHICLE_ORDER_HEADERS)
+
+
+def company_staff_worksheet() -> Any:
+    """Mở sheet nhân sự ở chế độ chỉ đọc, không tự thay đổi hàng tiêu đề."""
+    worksheet = _WORKSHEET_CACHE.get(COMPANY_STAFF_SHEET_NAME)
+    if worksheet is None:
+        try:
+            worksheet = get_spreadsheet().worksheet(COMPANY_STAFF_SHEET_NAME)
+        except gspread.WorksheetNotFound as exc:
+            raise HTTPException(
+                status_code=503,
+                detail=f"Không tìm thấy sheet {COMPANY_STAFF_SHEET_NAME}.",
+            ) from exc
+        _WORKSHEET_CACHE[COMPANY_STAFF_SHEET_NAME] = worksheet
+    return worksheet
+
+
+def company_staff_positions() -> dict[str, str]:
+    positions: dict[str, str] = {}
+    for row in worksheet_records(company_staff_worksheet()):
+        employee_code = str(row.get("maNV") or "").strip().upper()
+        if employee_code:
+            positions[employee_code] = str(row.get("chucVu") or "").strip()
+    return positions
 
 
 def attendance_overrides_worksheet() -> Any:
@@ -5340,8 +5373,9 @@ def list_accounting_attendance(request: Request, month: str = "") -> dict[str, A
         if view_type in {"travel", "cargo"} and employee_code and day and mark in {"X", "O", "KL"}:
             overrides[f"{view_type}:{employee_code}:{day}"] = row
     locks = payroll_lock_summary(month)
+    holidays = active_payroll_holidays(month)
     return {"month": month, "rosterSheetName": ROSTER_SHEET_NAME,
-            "roster": attendance_rows, "overrides": overrides, "locks": locks,
+            "roster": attendance_rows, "overrides": overrides, "locks": locks, "holidays": holidays,
             "editingEnabled": ATTENDANCE_EDITING_ENABLED,
             "fetchedAt": now_iso()}
 
@@ -5562,6 +5596,67 @@ def rounded_payroll_overtime_minutes(raw_value: Any) -> int:
     return (hours + 1) * 60
 
 
+def travel_roster_mark(status: Any) -> str:
+    """Keep Travel attendance based on the actual shift status, including holidays."""
+    normalized_status = normalize_text(status)
+    if "len ca" in normalized_status:
+        return "X"
+    if "xuong ca" in normalized_status:
+        return "O"
+    return "KL"
+
+
+def cargo_roster_mark(status: Any, work_date: datetime, holidays_by_date: dict[str, Any]) -> str:
+    normalized_status = normalize_text(status)
+    if "len ca" in normalized_status:
+        return "X"
+    if "xuong ca" in normalized_status and work_date.strftime("%Y-%m-%d") in holidays_by_date:
+        return "X"
+    return "KL"
+
+
+def cargo_holiday_bonus_eligible(status: Any, work_date: datetime, holidays_by_date: dict[str, Any]) -> bool:
+    return "len ca" in normalize_text(status) and work_date.strftime("%Y-%m-%d") in holidays_by_date
+
+
+def cargo_extra_workday_bonus(
+    work_days: int,
+    required_days: int,
+    base_salary: int,
+    total_allowance: int,
+) -> tuple[int, int]:
+    remaining_leave_days = min(2, max(0, int(work_days) - int(required_days)))
+    if remaining_leave_days <= 0 or required_days <= 0:
+        return remaining_leave_days, 0
+    bonus = round(
+        (max(0, int(base_salary)) + max(0, int(total_allowance)))
+        / required_days
+        * 1.5
+        * remaining_leave_days
+    )
+    return remaining_leave_days, bonus
+
+
+def attendance_bonus_rate(view_type: str, position: Any) -> int:
+    if view_type == "travel":
+        return 500_000
+    if normalize_text(position) == "nhan vien ap tai":
+        return 500_000
+    return 1_000_000
+
+
+def payroll_holiday_bonus_per_day(
+    view_type: str,
+    base_salary: int,
+    total_allowance: int,
+    required_days: int,
+) -> int:
+    if required_days <= 0:
+        return 0
+    holiday_salary_base = base_salary + total_allowance if view_type == "travel" else base_salary
+    return int(max(0, holiday_salary_base) / required_days * 3)
+
+
 def accounting_payroll_rows(month: str, view_type: str) -> dict[str, Any]:
     locked = payroll_lock_for(month, view_type)
     if locked:
@@ -5582,7 +5677,7 @@ def accounting_payroll_rows(month: str, view_type: str) -> dict[str, Any]:
     # Các nguồn dưới đây độc lập với nhau nhưng trước đây bị đọc tuần tự. Khi
     # cache vừa hết hạn, độ trễ vì vậy bằng tổng thời gian của nhiều tab Google.
     # Đọc song song giúp lần mở đầu tiên chỉ phải chờ tab chậm nhất.
-    with ThreadPoolExecutor(max_workers=8, thread_name_prefix="payroll-read") as executor:
+    with ThreadPoolExecutor(max_workers=9, thread_name_prefix="payroll-read") as executor:
         roster_future = executor.submit(roster_rows)
         overrides_future = executor.submit(
             lambda: worksheet_records(attendance_overrides_worksheet(), ATTENDANCE_OVERRIDE_HEADERS)
@@ -5595,6 +5690,7 @@ def accounting_payroll_rows(month: str, view_type: str) -> dict[str, Any]:
         deductions_future = executor.submit(active_payroll_deductions, month, view_type)
         notes_future = executor.submit(payroll_notes_map, month, view_type)
         holidays_future = executor.submit(active_payroll_holidays, month)
+        staff_positions_future = executor.submit(company_staff_positions) if view_type == "cargo" else None
 
         roster_sources = roster_future.result()
         override_sources = overrides_future.result()
@@ -5604,6 +5700,7 @@ def accounting_payroll_rows(month: str, view_type: str) -> dict[str, Any]:
         deduction_sources = deductions_future.result()
         payroll_notes = notes_future.result()
         holiday_sources = holidays_future.result()
+        staff_positions = staff_positions_future.result() if staff_positions_future else {}
 
     holidays_by_date = {
         str(row.get("date") or "")[:10]: {
@@ -5617,6 +5714,7 @@ def accounting_payroll_rows(month: str, view_type: str) -> dict[str, Any]:
     drivers: dict[str, dict[str, Any]] = {}
     events: dict[str, str] = {}
     overtime_events: dict[str, dict[str, Any]] = {}
+    holiday_bonus_eligible_keys: set[str] = set()
     for source in roster_sources:
         try:
             event_date = parse_roster_date(source.get("thoiGianTao"))
@@ -5636,14 +5734,18 @@ def accounting_payroll_rows(month: str, view_type: str) -> dict[str, Any]:
         drivers[code] = {"employeeCode": code, "employeeName": name}
         key = f"{code}:{event_date.day}"
         status = normalize_text(source.get("trangThaiLenXuongCa"))
+        if view_type == "cargo" and cargo_holiday_bonus_eligible(source.get("trangThaiLenXuongCa"), event_date, holidays_by_date):
+            holiday_bonus_eligible_keys.add(key)
         if view_type == "cargo" and (key not in overtime_events or "len ca" in status):
             overtime_events[key] = source
         if view_type == "travel":
-            events[key] = "O" if "xuong ca" in status else "X"
-        elif "len ca" in status:
-            events[key] = "X"
-        elif key not in events:
-            events[key] = "KL"
+            travel_mark = travel_roster_mark(source.get("trangThaiLenXuongCa"))
+            if travel_mark == "X" or key not in events:
+                events[key] = travel_mark
+        else:
+            cargo_mark = cargo_roster_mark(source.get("trangThaiLenXuongCa"), event_date, holidays_by_date)
+            if cargo_mark == "X" or key not in events:
+                events[key] = cargo_mark
 
     overrides: dict[str, str] = {}
     for source in override_sources:
@@ -5728,14 +5830,28 @@ def accounting_payroll_rows(month: str, view_type: str) -> dict[str, Any]:
         base_salary = round(float(salary.get("baseSalary") or 0))
         total_allowance = sum(item["amount"] for item in allowances)
         overtime_pay = round(overtime_minutes / 60 * 30_000) if view_type == "cargo" else 0
-        attendance_bonus = bonus_amount if work_days >= required_days else 0
+        remaining_leave_days, extra_workday_bonus = cargo_extra_workday_bonus(
+            work_days,
+            required_days,
+            base_salary,
+            total_allowance,
+        ) if view_type == "cargo" else (0, 0)
+        position = staff_positions.get(code, "")
+        attendance_bonus_rate_value = attendance_bonus_rate(view_type, position)
+        attendance_bonus = attendance_bonus_rate_value if work_days >= required_days else 0
         holiday_details = []
         for holiday_date, holiday in holidays_by_date.items():
             holiday_day = int(holiday_date[-2:])
-            mark = overrides.get(f"{code}:{holiday_day}") or events.get(f"{code}:{holiday_day}") or "KL"
-            if mark == "X":
+            holiday_key = f"{code}:{holiday_day}"
+            mark = overrides.get(holiday_key) or events.get(holiday_key) or "KL"
+            if mark == "X" and (view_type != "cargo" or holiday_key in holiday_bonus_eligible_keys):
                 holiday_details.append(holiday)
-        holiday_bonus_per_day = round(base_salary / required_days * 3) if base_salary > 0 and required_days > 0 else 0
+        holiday_bonus_per_day = payroll_holiday_bonus_per_day(
+            view_type,
+            base_salary,
+            total_allowance,
+            required_days,
+        )
         holiday_work_days = len(holiday_details)
         holiday_bonus = holiday_bonus_per_day * holiday_work_days
         fuel = fuel_by_driver.get(code, {})
@@ -5745,7 +5861,7 @@ def accounting_payroll_rows(month: str, view_type: str) -> dict[str, Any]:
         travel_revenue_bonus = round(travel_revenue * TRAVEL_REVENUE_BONUS_RATE) if view_type == "travel" else 0
         deductions = deductions_by_driver.get(code, [])
         total_deduction = sum(item["amount"] for item in deductions)
-        gross_salary = base_salary + total_allowance + overtime_pay + attendance_bonus + holiday_bonus + travel_revenue_bonus
+        gross_salary = base_salary + total_allowance + overtime_pay + extra_workday_bonus + attendance_bonus + holiday_bonus + travel_revenue_bonus
         # Fuel overuse is a separate charge collected from the driver, so it
         # reduces the amount actually paid without being merged into the
         # user-managed deduction columns. Fuel saving remains a separate bonus
@@ -5754,9 +5870,9 @@ def accounting_payroll_rows(month: str, view_type: str) -> dict[str, Any]:
         payroll_note = str((payroll_notes.get(code) or {}).get("note") or "").strip()
         if not payroll_note:
             payroll_note = next((str(item.get("note") or "").strip() for item in deductions if normalize_text(item.get("type")) == "khac" and str(item.get("note") or "").strip()), "")
-        output_rows.append({**driver, "requiredDays": required_days, "workDays": work_days, "baseSalary": base_salary, "allowances": allowances, "totalAllowance": total_allowance, "overtimeMinutes": overtime_minutes, "overtimePay": overtime_pay, "attendanceBonus": attendance_bonus, "holidayWorkDays": holiday_work_days, "holidayBonusPerDay": holiday_bonus_per_day, "holidayBonus": holiday_bonus, "holidayDates": [item["date"] for item in holiday_details], "holidayDetails": holiday_details, "travelRevenue": travel_revenue, "travelRevenueBonus": travel_revenue_bonus, "fuelSavingBonus": fuel_saving_bonus, "fuelOveruseCharge": fuel_overuse_charge, "deductions": deductions, "totalDeduction": total_deduction, "grossSalary": gross_salary, "totalSalary": net_salary, "bankName": str(salary.get("bankName") or ""), "accountNumber": str(salary.get("accountNumber") or ""), "accountHolder": str(salary.get("accountHolder") or ""), "salaryEffectiveMonth": str(salary.get("effectiveMonth") or ""), "salaryDeclared": bool(salary), "payrollNote": payroll_note})
+        output_rows.append({**driver, "position": position, "requiredDays": required_days, "workDays": work_days, "baseSalary": base_salary, "allowances": allowances, "totalAllowance": total_allowance, "overtimeMinutes": overtime_minutes, "overtimePay": overtime_pay, "remainingLeaveDays": remaining_leave_days, "extraWorkdayBonus": extra_workday_bonus, "attendanceBonusRate": attendance_bonus_rate_value, "attendanceBonus": attendance_bonus, "holidayWorkDays": holiday_work_days, "holidayBonusPerDay": holiday_bonus_per_day, "holidayBonus": holiday_bonus, "holidayDates": [item["date"] for item in holiday_details], "holidayDetails": holiday_details, "travelRevenue": travel_revenue, "travelRevenueBonus": travel_revenue_bonus, "fuelSavingBonus": fuel_saving_bonus, "fuelOveruseCharge": fuel_overuse_charge, "deductions": deductions, "totalDeduction": total_deduction, "grossSalary": gross_salary, "totalSalary": net_salary, "bankName": str(salary.get("bankName") or ""), "accountNumber": str(salary.get("accountNumber") or ""), "accountHolder": str(salary.get("accountHolder") or ""), "salaryEffectiveMonth": str(salary.get("effectiveMonth") or ""), "salaryDeclared": bool(salary), "payrollNote": payroll_note})
     deduction_types = order_deduction_types([str(item.get("type") or "Khoản trừ").strip() or "Khoản trừ" for row in output_rows for item in (row.get("deductions") or [])])
-    return {"month": month, "viewType": view_type, "dayCount": day_count, "requiredDays": required_days, "bonusAmount": bonus_amount, "holidays": list(holidays_by_date.values()), "holidayBonusTotal": sum(row.get("holidayBonus", 0) for row in output_rows), "travelRevenueTotal": sum(row.get("travelRevenue", 0) for row in output_rows), "travelRevenueBonusRate": round(TRAVEL_REVENUE_BONUS_RATE * 100) if view_type == "travel" else 0, "travelRevenueBonusTotal": sum(row.get("travelRevenueBonus", 0) for row in output_rows), "fuelSavingBonusTotal": sum(row.get("fuelSavingBonus", 0) for row in output_rows), "fuelOveruseChargeTotal": sum(row.get("fuelOveruseCharge", 0) for row in output_rows), "deductionTotal": sum(row.get("totalDeduction", 0) for row in output_rows), "deductionTypes": deduction_types, "overtimeRate": 30_000 if view_type == "cargo" else 0, "rows": output_rows, "locked": False, "lockedBy": "", "lockedAt": "", "fetchedAt": now_iso()}
+    return {"month": month, "viewType": view_type, "dayCount": day_count, "requiredDays": required_days, "bonusAmount": bonus_amount, "holidays": list(holidays_by_date.values()), "holidayBonusTotal": sum(row.get("holidayBonus", 0) for row in output_rows), "extraWorkdayBonusTotal": sum(row.get("extraWorkdayBonus", 0) for row in output_rows), "travelRevenueTotal": sum(row.get("travelRevenue", 0) for row in output_rows), "travelRevenueBonusRate": round(TRAVEL_REVENUE_BONUS_RATE * 100) if view_type == "travel" else 0, "travelRevenueBonusTotal": sum(row.get("travelRevenueBonus", 0) for row in output_rows), "fuelSavingBonusTotal": sum(row.get("fuelSavingBonus", 0) for row in output_rows), "fuelOveruseChargeTotal": sum(row.get("fuelOveruseCharge", 0) for row in output_rows), "deductionTotal": sum(row.get("totalDeduction", 0) for row in output_rows), "deductionTypes": deduction_types, "overtimeRate": 30_000 if view_type == "cargo" else 0, "rows": output_rows, "locked": False, "lockedBy": "", "lockedAt": "", "fetchedAt": now_iso()}
 
 
 @app.get("/api/accounting/payroll-notes")
@@ -5853,7 +5969,7 @@ def _payroll_detail_sources(month: str, view_type: str, payroll_rows: list[dict[
         for row in payroll_rows
         if str(row.get("employeeCode") or "").strip()
     }
-    with ThreadPoolExecutor(max_workers=5, thread_name_prefix="payslip-detail") as executor:
+    with ThreadPoolExecutor(max_workers=6, thread_name_prefix="payslip-detail") as executor:
         roster_future = executor.submit(roster_rows)
         overrides_future = executor.submit(
             lambda: worksheet_records(attendance_overrides_worksheet(), ATTENDANCE_OVERRIDE_HEADERS)
@@ -5861,14 +5977,23 @@ def _payroll_detail_sources(month: str, view_type: str, payroll_rows: list[dict[
         orders_future = executor.submit(all_order_records) if view_type == "travel" else None
         fuel_future = executor.submit(active_fuel_records) if view_type == "travel" else None
         wash_future = executor.submit(active_car_wash_records) if view_type == "travel" else None
+        holidays_future = executor.submit(active_payroll_holidays, month)
         roster_sources = roster_future.result()
         override_sources = overrides_future.result()
         order_sources = orders_future.result() if orders_future else []
         fuel_sources = fuel_future.result() if fuel_future else []
         wash_sources = wash_future.result() if wash_future else []
+        holiday_sources = holidays_future.result()
+
+    holidays_by_date = {
+        str(row.get("date") or "")[:10]: row
+        for row in holiday_sources
+        if re.fullmatch(r"\d{4}-\d{2}-\d{2}", str(row.get("date") or "")[:10])
+    }
 
     attendance_events: dict[str, str] = {}
     overtime_events: dict[str, dict[str, Any]] = {}
+    holiday_bonus_eligible_keys: set[str] = set()
     for source in roster_sources:
         event_date = parse_roster_date(source.get("thoiGianTao"))
         if event_date == datetime.min or event_date.strftime("%Y-%m") != month:
@@ -5885,13 +6010,16 @@ def _payroll_detail_sources(month: str, view_type: str, payroll_rows: list[dict[
             continue
         status = normalize_text(source.get("trangThaiLenXuongCa"))
         key = f"{code}:{event_date.day}"
+        if view_type == "cargo" and cargo_holiday_bonus_eligible(source.get("trangThaiLenXuongCa"), event_date, holidays_by_date):
+            holiday_bonus_eligible_keys.add(key)
         if view_type == "travel":
             attendance_events[key] = "O" if "xuong ca" in status else "X"
-        elif "len ca" in status:
-            attendance_events[key] = "X"
-            overtime_events[key] = source
-        elif key not in attendance_events:
-            attendance_events[key] = "KL"
+        else:
+            cargo_mark = cargo_roster_mark(source.get("trangThaiLenXuongCa"), event_date, holidays_by_date)
+            if cargo_mark == "X" or key not in attendance_events:
+                attendance_events[key] = cargo_mark
+            if "len ca" in status:
+                overtime_events[key] = source
 
     attendance_overrides: dict[str, str] = {}
     for source in override_sources:
@@ -5918,6 +6046,7 @@ def _payroll_detail_sources(month: str, view_type: str, payroll_rows: list[dict[
                 "mark": mark,
                 "status": attendance_labels[mark],
                 "workDay": 1 if mark == "X" else 0,
+                "holidayBonusEligible": mark == "X" and (view_type != "cargo" or f"{code}:{day}" in holiday_bonus_eligible_keys),
                 "overtimeMinutes": overtime_minutes,
                 "overtimePay": round(overtime_minutes / 60 * 30_000) if view_type == "cargo" else 0,
                 "source": "Điều chỉnh kế toán" if f"{code}:{day}" in attendance_overrides else "Danh sách lên ca",
@@ -6185,6 +6314,8 @@ def _build_driver_payslip_workbook(
         return written_row
 
     section("NGÀY CÔNG")
+    if is_cargo and str(driver.get("position") or "").strip():
+        metric("Chức vụ", str(driver.get("position") or "").strip(), "")
     metric("Số ngày công chuẩn", driver.get("requiredDays", 0), "ngày")
     metric("Số ngày công đi làm", driver.get("workDays", 0), "ngày")
     metric("Số ngày lễ đi làm", driver.get("holidayWorkDays", 0), "ngày")
@@ -6197,6 +6328,8 @@ def _build_driver_payslip_workbook(
     if is_cargo:
         metric("Giờ tăng ca", round(float(driver.get("overtimeMinutes") or 0) / 60, 2), "giờ")
         metric("Tiền tăng ca", driver.get("overtimePay", 0))
+        metric("Số ngày còn phép trong tháng", driver.get("remainingLeaveDays", 0), "ngày")
+        metric("Tiền thưởng ngày công tăng ca", driver.get("extraWorkdayBonus", 0))
     metric("Thưởng đủ công", driver.get("attendanceBonus", 0))
     metric("Thưởng ngày lễ", driver.get("holidayBonus", 0))
     if not is_cargo:
@@ -6227,6 +6360,9 @@ def _build_driver_payslip_workbook(
     current_row += 1
     summary.merge_cells(start_row=current_row, start_column=1, end_row=current_row, end_column=4)
     formula_note = "Lương gộp đã gồm thưởng ngày lễ = (Lương cơ bản / Công chuẩn) × 3 × Số ngày lễ đi làm. "
+    if is_cargo:
+        formula_note += "Thưởng đủ công: Nhân Viên Áp Tải 500.000 VNĐ, các chức vụ Xe Hàng khác 1.000.000 VNĐ. "
+        formula_note += "Thưởng ngày công tăng ca = ((Lương cơ bản + Phụ cấp) / Công chuẩn) × 1,5 × Số ngày còn phép. "
     formula_note += "Thực nhận = Lương gộp - Tổng khoản trừ." if is_cargo else "Thực nhận = Lương gộp - Tổng khoản trừ - Thu vượt định mức + Thưởng tiết kiệm xăng."
     summary.cell(current_row, 1, formula_note)
     summary.cell(current_row, 1).font = Font(name="Arial", size=10, italic=True, color=muted)
@@ -6266,12 +6402,16 @@ def _build_driver_payslip_workbook(
     attendance_widths += [24, 18, 22]
     _style_payslip_detail_sheet(attendance, f"CHẤM CÔNG · {name}", period_label, attendance_headers, attendance_widths)
     for index, item in enumerate(attendance_rows, 1):
-        values = [index, item["date"], item["weekday"], item["mark"], item["status"], item["workDay"]]
-        if is_cargo:
-            values += [item["overtimeMinutes"] / 1440, item["overtimePay"]]
         date_key = item["date"].strftime("%Y-%m-%d")
         holiday_name = holiday_by_date.get(date_key, "")
-        values += [holiday_name, holiday_bonus_per_day if holiday_name and item["mark"] == "X" else 0, item["source"]]
+        is_holiday_workday = bool(holiday_name and item["mark"] == "X")
+        is_holiday_bonus_eligible = bool(is_holiday_workday and item.get("holidayBonusEligible", not is_cargo))
+        display_mark = "NL" if is_holiday_workday else item["mark"]
+        display_status = f"Lên ca ngày lễ: {holiday_name}" if is_holiday_bonus_eligible else (f"Xuống ca ngày lễ: {holiday_name} (tính công, không thưởng)" if is_cargo and is_holiday_workday else item["status"])
+        values = [index, item["date"], item["weekday"], display_mark, display_status, item["workDay"]]
+        if is_cargo:
+            values += [item["overtimeMinutes"] / 1440, item["overtimePay"]]
+        values += [holiday_name, holiday_bonus_per_day if is_holiday_bonus_eligible else 0, item["source"]]
         for column, value in enumerate(values, 1):
             attendance.cell(index + 4, column, value)
         attendance.cell(index + 4, 2).number_format = "dd/mm/yyyy"
@@ -6510,7 +6650,7 @@ def export_accounting_payroll(request: Request, month: str = "", viewType: str =
     deduction_types = order_deduction_types(deduction_types)
     headers = ["STT", "Mã NV", "Họ và tên", "Công chuẩn", "Công thực tế", "Lương cơ bản", *allowance_types, "Tổng phụ cấp", *deduction_types, "Tổng khoản trừ"]
     if viewType == "cargo":
-        headers += ["Giờ tăng ca", "Tiền tăng ca"]
+        headers += ["Giờ tăng ca", "Tiền tăng ca", "Số ngày còn phép trong tháng", "Tiền thưởng ngày công tăng ca"]
     if viewType == "travel":
         headers += ["Thưởng đủ công", "Ngày lễ đi làm", "Thưởng ngày lễ", "Doanh thu tháng", "Thưởng doanh thu 10%", "Thưởng tiết kiệm xăng", "Thu vượt định mức", "Tổng lương", "Ngân hàng", "Số tài khoản", "Chủ tài khoản", "Ghi chú"]
     else:
@@ -6570,7 +6710,7 @@ def export_accounting_payroll(request: Request, month: str = "", viewType: str =
                 result.append(normalized)
             return "; ".join(result)
         if viewType == "cargo":
-            values += [row["overtimeMinutes"] / 1440, row["overtimePay"]]
+            values += [row["overtimeMinutes"] / 1440, row["overtimePay"], row.get("remainingLeaveDays", 0), row.get("extraWorkdayBonus", 0)]
         if viewType == "travel":
             salary_note = "" if row["salaryDeclared"] else "Chưa khai báo lương"
             payroll_note = str(row.get("payrollNote") or "").strip()
@@ -6584,13 +6724,13 @@ def export_accounting_payroll(request: Request, month: str = "", viewType: str =
             cell.border = border
             cell.alignment = Alignment(vertical="center", wrap_text=True)
             if header := headers[column - 1]:
-                if header in {"Lương cơ bản", "Tổng phụ cấp", "Tổng khoản trừ", "Tiền tăng ca", "Thưởng đủ công", "Thưởng ngày lễ", "Doanh thu tháng", "Thưởng doanh thu 10%", "Thưởng tiết kiệm xăng", "Thu vượt định mức", "Tổng lương"} or header in allowance_types or header in deduction_types:
+                if header in {"Lương cơ bản", "Tổng phụ cấp", "Tổng khoản trừ", "Tiền tăng ca", "Tiền thưởng ngày công tăng ca", "Thưởng đủ công", "Thưởng ngày lễ", "Doanh thu tháng", "Thưởng doanh thu 10%", "Thưởng tiết kiệm xăng", "Thu vượt định mức", "Tổng lương"} or header in allowance_types or header in deduction_types:
                     cell.number_format = '#,##0'
                 elif header == "Giờ tăng ca":
                     cell.number_format = '[h]:mm'
         sheet.row_dimensions[index + 3].height = 24
     widths = [6, 12, 25, 12, 12, 16] + [20] * len(allowance_types) + [16] + [20] * len(deduction_types) + [16]
-    widths += [14, 16] if viewType == "cargo" else []
+    widths += [14, 16, 22, 24] if viewType == "cargo" else []
     widths += [18, 16, 18]
     widths += [18, 18, 18, 23, 20, 18, 18, 18, 28] if viewType == "travel" else [20, 18, 18, 18, 28]
     for column in range(1, len(headers) + 1):
@@ -6623,9 +6763,16 @@ def export_accounting_attendance(request: Request, month: str = "", viewType: st
     year, month_number = (int(part) for part in month.split("-"))
     next_month = datetime(year + (month_number == 12), 1 if month_number == 12 else month_number + 1, 1)
     day_count = (next_month - timedelta(days=1)).day
+    holiday_by_day = {
+        int(str(holiday.get("date") or "")[8:10]): holiday
+        for holiday in active_payroll_holidays(month)
+        if re.fullmatch(r"\d{4}-\d{2}-\d{2}", str(holiday.get("date") or "")[:10])
+    }
+    holidays_by_date = {f"{month}-{day:02d}": holiday for day, holiday in holiday_by_day.items()}
     drivers: dict[str, dict[str, str]] = {}
     events: dict[str, str] = {}
     overtime_events: dict[str, dict[str, Any]] = {}
+    holiday_bonus_eligible_keys: set[str] = set()
     for row in roster_rows():
         try:
             event_date = parse_roster_date(row.get("thoiGianTao"))
@@ -6645,14 +6792,18 @@ def export_accounting_attendance(request: Request, month: str = "", viewType: st
         drivers[code] = {"name": name or code, "branch": str(row.get("khuVucHoatDong") or "").strip()}
         status = normalize_text(row.get("trangThaiLenXuongCa"))
         key = f"{code}:{event_date.day}"
+        if viewType == "cargo" and cargo_holiday_bonus_eligible(row.get("trangThaiLenXuongCa"), event_date, holidays_by_date):
+            holiday_bonus_eligible_keys.add(key)
         if viewType == "cargo" and (key not in overtime_events or "len ca" in status):
             overtime_events[key] = row
         if viewType == "travel":
-            events[key] = "O" if "xuong ca" in status else "X"
-        elif "len ca" in status:
-            events[key] = "X"
-        elif key not in events:
-            events[key] = "KL"
+            travel_mark = travel_roster_mark(row.get("trangThaiLenXuongCa"))
+            if travel_mark == "X" or key not in events:
+                events[key] = travel_mark
+        else:
+            cargo_mark = cargo_roster_mark(row.get("trangThaiLenXuongCa"), event_date, holidays_by_date)
+            if cargo_mark == "X" or key not in events:
+                events[key] = cargo_mark
 
     overrides: dict[str, dict[str, Any]] = {}
     for row in worksheet_records(attendance_overrides_worksheet(), ATTENDANCE_OVERRIDE_HEADERS):
@@ -6681,7 +6832,7 @@ def export_accounting_attendance(request: Request, month: str = "", viewType: st
     title.alignment = Alignment(horizontal="center", vertical="center")
     sheet.row_dimensions[1].height = 30
     sheet.merge_cells(start_row=2, start_column=1, end_row=2, end_column=last_column)
-    sheet.cell(2, 1, "X: Có đi làm (tính công)     O: Nghỉ có lương (không tính công)     KL: Nghỉ không lương")
+    sheet.cell(2, 1, "X: Có đi làm (tính công)     NL: Làm ngày lễ (tính công)     O: Nghỉ có lương (không tính công)     KL: Nghỉ không lương")
     sheet.cell(2, 1).font = Font(italic=True, color="475569")
     sheet.cell(2, 1).alignment = Alignment(horizontal="left")
 
@@ -6710,7 +6861,7 @@ def export_accounting_attendance(request: Request, month: str = "", viewType: st
             cell.border = border
             cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
 
-    mark_fills = {"X": PatternFill("solid", fgColor="DDF4EE"), "O": PatternFill("solid", fgColor="FFF0A6"), "KL": PatternFill("solid", fgColor="EEF2F3")}
+    mark_fills = {"X": PatternFill("solid", fgColor="DDF4EE"), "NL": PatternFill("solid", fgColor="E8E0FF"), "O": PatternFill("solid", fgColor="FFF0A6"), "KL": PatternFill("solid", fgColor="EEF2F3")}
     manual_side = Side(style="medium", color="0B8F83")
     manual_border = Border(left=manual_side, right=manual_side, top=manual_side, bottom=manual_side)
     position = "Tài xế Travel" if viewType == "travel" else "Tài xế Xe Hàng"
@@ -6726,10 +6877,11 @@ def export_accounting_attendance(request: Request, month: str = "", viewType: st
             key = f"{code}:{day}"
             mark = str(overrides.get(key, {}).get("mark") or events.get(key) or "KL")
             total += int(mark == "X")
-            cell = sheet.cell(row_number, day_start + day - 1, mark)
-            cell.fill = mark_fills[mark]
+            display_mark = "NL" if mark == "X" and day in holiday_by_day else mark
+            cell = sheet.cell(row_number, day_start + day - 1, display_mark)
+            cell.fill = mark_fills[display_mark]
             cell.border = manual_border if key in overrides else border
-            cell.font = Font(bold=True, color={"X": "087D6B", "O": "876100", "KL": "7A8B8F"}[mark])
+            cell.font = Font(bold=True, color={"X": "087D6B", "NL": "6D28D9", "O": "876100", "KL": "7A8B8F"}[display_mark])
             cell.alignment = Alignment(horizontal="center", vertical="center")
         total_cell = sheet.cell(row_number, day_start + day_count, total)
         total_cell.font = Font(bold=True)
@@ -12285,3 +12437,4 @@ def update_order_remittance_status(
         "ngayXacNhanNopTien": order["ngayXacNhanNopTien"],
         "nguoiXacNhanNopTien": order["nguoiXacNhanNopTien"],
     }
+
