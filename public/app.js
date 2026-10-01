@@ -983,6 +983,13 @@ function orderRevenueAmount(order) {
   return Math.max(parseMoney(order.giaTien) + parseMoney(order.phuThu) - parseMoney(order.giamGia) - parseMoney(order.tongUuDai), 0);
 }
 
+function orderPayrollRevenueAmount(order) {
+  return Math.max(
+    orderRevenueAmount(order) + parseMoney(order.uuDaiTinhDoanhThuLaiXe),
+    0,
+  );
+}
+
 function orderVatAmount(order) {
   return parseMoney(order.thueVAT);
 }
@@ -6080,7 +6087,7 @@ function renderOrders() {
       result.discount += parseMoney(row.giamGia) + parseMoney(row.tongUuDai);
       result.vat += orderVatAmount(row);
       result.deposit += parseMoney(row.daCoc);
-      result.amountDue += orderRevenueAmount(row);
+      result.amountDue += orderPayrollRevenueAmount(row);
       result.commission += parseMoney(row.soTienNopLai);
       const hasDebt = normalize(row.congNo).includes("co");
       let debtAmount = 0;
@@ -6196,3 +6203,4 @@ async function initializeApp() {
 
 initializeApp();
 window.setInterval(checkAppVersion, APP_VERSION_CHECK_INTERVAL_MS);
+
