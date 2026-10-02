@@ -5412,6 +5412,26 @@ def save_accounting_attendance_override(payload: AttendanceOverrideInput, reques
     return {"ok": True, "override": row}
 
 
+def canonical_allowance_type(value: Any) -> str:
+    """Quy các cách ghi cũ về đúng tên danh mục phụ cấp đang sử dụng."""
+    text = str(value or "").strip() or "Khác"
+    key = re.sub(r"[^a-z0-9]", "", normalize_text(text))
+    if key in {"dtxangxe", "dienthoaixangxe"}:
+        return "Đt, xăng xe"
+    return text
+
+
+def merge_allowances(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    merged: dict[str, int] = {}
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        allowance_type = canonical_allowance_type(item.get("type"))
+        amount = max(0, round(float(item.get("amount") or 0)))
+        merged[allowance_type] = merged.get(allowance_type, 0) + amount
+    return [{"type": allowance_type, "amount": amount} for allowance_type, amount in merged.items()]
+
+
 @app.get("/api/accounting/driver-salaries")
 def list_driver_salaries(request: Request) -> dict[str, Any]:
     user = current_user(request)
@@ -5442,14 +5462,11 @@ def list_driver_salaries(request: Request) -> dict[str, Any]:
             try:
                 parsed = json.loads(raw_allowances)
                 if isinstance(parsed, list):
-                    allowances = [
-                        {"type": str(item.get("type") or "Khác").strip() or "Khác", "amount": max(0, round(float(item.get("amount") or 0)))}
-                        for item in parsed if isinstance(item, dict)
-                    ]
+                    allowances = merge_allowances(parsed)
             except (ValueError, TypeError, json.JSONDecodeError):
                 allowances = []
         if not allowances and float(row.get("allowance") or 0) > 0:
-            allowances = [{"type": str(row.get("allowanceType") or "Khác"), "amount": round(float(row.get("allowance") or 0))}]
+            allowances = merge_allowances([{"type": row.get("allowanceType") or "Khác", "amount": row.get("allowance") or 0}])
         row["allowances"] = allowances
         row["totalAllowance"] = sum(item["amount"] for item in allowances)
     return {"drivers": sorted(drivers.values(), key=lambda row: row["employeeName"]), "rows": rows, "sheetName": DRIVER_SALARIES_SHEET_NAME}
@@ -5460,13 +5477,13 @@ def save_driver_salary(payload: DriverSalaryInput, request: Request) -> dict[str
     user = current_user(request)
     if str(user.get("role") or "") not in {"admin", "ke_toan"}:
         raise HTTPException(status_code=403, detail="Chỉ bộ phận Kế toán được khai báo lương.")
-    allowances = [
+    allowances = merge_allowances([
         {"type": item.type.strip(), "amount": round(item.amount)}
         for item in payload.allowances
         if item.type.strip() and item.amount >= 0
-    ]
+    ])
     if not allowances and payload.allowance > 0:
-        allowances = [{"type": payload.allowanceType.strip(), "amount": round(payload.allowance)}]
+        allowances = merge_allowances([{"type": payload.allowanceType.strip(), "amount": round(payload.allowance)}])
     total_allowance = sum(item["amount"] for item in allowances)
     row = {
         "employeeCode": payload.employeeCode.strip().upper(),
@@ -5736,7 +5753,7 @@ def accounting_payroll_rows(month: str, view_type: str) -> dict[str, Any]:
         status = normalize_text(source.get("trangThaiLenXuongCa"))
         if view_type == "cargo" and cargo_holiday_bonus_eligible(source.get("trangThaiLenXuongCa"), event_date, holidays_by_date):
             holiday_bonus_eligible_keys.add(key)
-        if view_type == "cargo" and (key not in overtime_events or "len ca" in status):
+        if view_type == "cargo" and "len ca" in status:
             overtime_events[key] = source
         if view_type == "travel":
             travel_mark = travel_roster_mark(source.get("trangThaiLenXuongCa"))
@@ -5815,11 +5832,11 @@ def accounting_payroll_rows(month: str, view_type: str) -> dict[str, Any]:
         try:
             parsed = json.loads(str(salary.get("allowancesJson") or "[]"))
             if isinstance(parsed, list):
-                allowances = [{"type": str(item.get("type") or "Khác"), "amount": max(0, round(float(item.get("amount") or 0)))} for item in parsed if isinstance(item, dict)]
+                allowances = merge_allowances(parsed)
         except (ValueError, TypeError, json.JSONDecodeError):
             allowances = []
         if not allowances and float(salary.get("allowance") or 0) > 0:
-            allowances = [{"type": str(salary.get("allowanceType") or "Khác"), "amount": round(float(salary.get("allowance") or 0))}]
+            allowances = merge_allowances([{"type": salary.get("allowanceType") or "Khác", "amount": salary.get("allowance") or 0}])
         work_days = sum(1 for day in range(1, day_count + 1) if (overrides.get(f"{code}:{day}") or events.get(f"{code}:{day}") or "KL") == "X")
         overtime_minutes = 0
         if view_type == "cargo":
@@ -6039,7 +6056,8 @@ def _payroll_detail_sources(month: str, view_type: str, payroll_rows: list[dict[
         for day in range(1, day_count + 1):
             work_date = datetime(year, month_number, day)
             mark = attendance_overrides.get(f"{code}:{day}") or attendance_events.get(f"{code}:{day}") or "KL"
-            overtime_minutes = rounded_payroll_overtime_minutes((overtime_events.get(f"{code}:{day}") or {}).get("soGioTangCa")) if view_type == "cargo" and mark == "X" else 0
+            overtime_source = overtime_events.get(f"{code}:{day}") or {}
+            overtime_minutes = rounded_payroll_overtime_minutes(overtime_source.get("soGioTangCa")) if view_type == "cargo" and mark == "X" else 0
             rows.append({
                 "date": work_date,
                 "weekday": weekday_labels[work_date.weekday()],
@@ -6049,6 +6067,10 @@ def _payroll_detail_sources(month: str, view_type: str, payroll_rows: list[dict[
                 "holidayBonusEligible": mark == "X" and (view_type != "cargo" or f"{code}:{day}" in holiday_bonus_eligible_keys),
                 "overtimeMinutes": overtime_minutes,
                 "overtimePay": round(overtime_minutes / 60 * 30_000) if view_type == "cargo" else 0,
+                "shiftStart": str(overtime_source.get("gioBatDau") or "").strip(),
+                "shiftEnd": str(overtime_source.get("gioKetThuc") or "").strip(),
+                "shiftMinutes": payroll_duration_minutes(overtime_source.get("tongSoGioLam")) if overtime_source else 0,
+                "shiftStatus": str(overtime_source.get("trangThaiLenXuongCa") or "").strip(),
                 "source": "Điều chỉnh kế toán" if f"{code}:{day}" in attendance_overrides else "Danh sách lên ca",
             })
         attendance_by_driver[code] = rows
@@ -6322,7 +6344,7 @@ def _build_driver_payslip_workbook(
 
     section("THU NHẬP")
     metric("Lương cơ bản", driver.get("baseSalary", 0))
-    for allowance in driver.get("allowances") or []:
+    for allowance in merge_allowances(driver.get("allowances") or []):
         metric(f"Phụ cấp: {str(allowance.get('type') or 'Khác')}", allowance.get("amount", 0))
     metric("Tổng phụ cấp", driver.get("totalAllowance", 0))
     if is_cargo:
@@ -6396,8 +6418,8 @@ def _build_driver_payslip_workbook(
     attendance_headers = ["STT", "Ngày", "Thứ", "Dấu công", "Diễn giải", "Công tính lương"]
     attendance_widths = [7, 14, 13, 12, 22, 18]
     if is_cargo:
-        attendance_headers += ["Giờ tăng ca", "Tiền tăng ca"]
-        attendance_widths += [16, 17]
+        attendance_headers += ["Giờ bắt đầu", "Giờ kết thúc", "Giờ tăng ca", "Tiền tăng ca"]
+        attendance_widths += [14, 14, 16, 17]
     attendance_headers += ["Ngày lễ", "Thưởng ngày lễ", "Nguồn"]
     attendance_widths += [24, 18, 22]
     _style_payslip_detail_sheet(attendance, f"CHẤM CÔNG · {name}", period_label, attendance_headers, attendance_widths)
@@ -6410,15 +6432,15 @@ def _build_driver_payslip_workbook(
         display_status = f"Lên ca ngày lễ: {holiday_name}" if is_holiday_bonus_eligible else (f"Xuống ca ngày lễ: {holiday_name} (tính công, không thưởng)" if is_cargo and is_holiday_workday else item["status"])
         values = [index, item["date"], item["weekday"], display_mark, display_status, item["workDay"]]
         if is_cargo:
-            values += [item["overtimeMinutes"] / 1440, item["overtimePay"]]
+            values += [item.get("shiftStart") or "", item.get("shiftEnd") or "", item["overtimeMinutes"] / 1440, item["overtimePay"]]
         values += [holiday_name, holiday_bonus_per_day if is_holiday_bonus_eligible else 0, item["source"]]
         for column, value in enumerate(values, 1):
             attendance.cell(index + 4, column, value)
         attendance.cell(index + 4, 2).number_format = "dd/mm/yyyy"
         attendance.cell(index + 4, len(attendance_headers) - 1).number_format = money_format
         if is_cargo:
-            attendance.cell(index + 4, 7).number_format = "[h]:mm"
-            attendance.cell(index + 4, 8).number_format = money_format
+            attendance.cell(index + 4, 9).number_format = "[h]:mm"
+            attendance.cell(index + 4, 10).number_format = money_format
     _finish_payslip_detail_sheet(attendance, len(attendance_rows), len(attendance_headers))
     _append_payslip_total_row(
         attendance,
@@ -6433,10 +6455,68 @@ def _build_driver_payslip_workbook(
     if is_cargo:
         total_row = 5 + len(attendance_rows)
         if attendance_rows:
-            attendance.cell(total_row, 7, sum(item["overtimeMinutes"] for item in attendance_rows) / 1440)
-            attendance.cell(total_row, 7).number_format = "[h]:mm"
-            attendance.cell(total_row, 8, sum(item["overtimePay"] for item in attendance_rows))
-            attendance.cell(total_row, 8).number_format = money_format
+            attendance.cell(total_row, 9, sum(item["overtimeMinutes"] for item in attendance_rows) / 1440)
+            attendance.cell(total_row, 9).number_format = "[h]:mm"
+            attendance.cell(total_row, 10, sum(item["overtimePay"] for item in attendance_rows))
+            attendance.cell(total_row, 10).number_format = money_format
+
+        overtime = workbook.create_sheet("Chi tiết tăng ca")
+        overtime_headers = [
+            "STT",
+            "Ngày",
+            "Thứ",
+            "Trạng thái ca",
+            "Giờ bắt đầu",
+            "Giờ kết thúc",
+            "Tổng giờ lên ca",
+            "Giờ tăng ca",
+            "Đơn giá tăng ca",
+            "Tiền tăng ca",
+            "Nguồn",
+        ]
+        _style_payslip_detail_sheet(
+            overtime,
+            f"CHI TIẾT GIỜ TĂNG CA THEO NGÀY · {name}",
+            f"{period_label} · Chỉ tính giờ từ bản ghi Lên ca",
+            overtime_headers,
+            [7, 14, 13, 18, 14, 14, 18, 16, 18, 18, 22],
+        )
+        for index, item in enumerate(attendance_rows, 1):
+            has_shift = bool(item.get("shiftStatus"))
+            values = [
+                index,
+                item["date"],
+                item["weekday"],
+                item.get("shiftStatus") or "Không có bản ghi Lên ca",
+                item.get("shiftStart") if has_shift else "",
+                item.get("shiftEnd") if has_shift else "",
+                item.get("shiftMinutes", 0) / 1440 if has_shift else "",
+                item.get("overtimeMinutes", 0) / 1440,
+                30_000 if item.get("overtimeMinutes", 0) else 0,
+                item.get("overtimePay", 0),
+                item.get("source") or "",
+            ]
+            for column, value in enumerate(values, 1):
+                overtime.cell(index + 4, column, value)
+            overtime.cell(index + 4, 2).number_format = "dd/mm/yyyy"
+            overtime.cell(index + 4, 7).number_format = "[h]:mm"
+            overtime.cell(index + 4, 8).number_format = "[h]:mm"
+            overtime.cell(index + 4, 9).number_format = money_format
+            overtime.cell(index + 4, 10).number_format = money_format
+        _finish_payslip_detail_sheet(overtime, len(attendance_rows), len(overtime_headers))
+        _append_payslip_total_row(
+            overtime,
+            len(attendance_rows),
+            len(overtime_headers),
+            "Tổng cộng",
+            6,
+            {
+                7: sum(item.get("shiftMinutes", 0) for item in attendance_rows) / 1440,
+                8: sum(item.get("overtimeMinutes", 0) for item in attendance_rows) / 1440,
+                10: sum(item.get("overtimePay", 0) for item in attendance_rows),
+            },
+            {7: "[h]:mm", 8: "[h]:mm", 10: money_format},
+        )
         output = BytesIO()
         workbook.save(output)
         output.seek(0)
@@ -6640,7 +6720,7 @@ def export_accounting_payroll(request: Request, month: str = "", viewType: str =
         if not payroll_allowances and float(payroll_row.get("allowance") or 0) > 0:
             payroll_allowances = [{"type": payroll_row.get("allowanceType") or "Khác", "amount": payroll_row.get("allowance")} ]
         for allowance in payroll_allowances:
-            allowance_type = str(allowance.get("type") or "Khác").strip() or "Khác"
+            allowance_type = canonical_allowance_type(allowance.get("type"))
             if allowance_type not in allowance_types:
                 allowance_types.append(allowance_type)
         for deduction in payroll_row.get("deductions") or []:
@@ -6674,7 +6754,7 @@ def export_accounting_payroll(request: Request, month: str = "", viewType: str =
             row_allowances = [{"type": row.get("allowanceType") or "Khác", "amount": row.get("allowance")} ]
         allowance_by_type = {}
         for item in row_allowances:
-            allowance_type = str(item.get("type") or "Khác").strip() or "Khác"
+            allowance_type = canonical_allowance_type(item.get("type"))
             allowance_by_type[allowance_type] = allowance_by_type.get(allowance_type, 0) + round(float(item.get("amount") or 0))
         values = [index, row["employeeCode"], row["employeeName"], row["requiredDays"], row["workDays"], row["baseSalary"]]
         values += [allowance_by_type.get(allowance_type, 0) for allowance_type in allowance_types]
@@ -6794,7 +6874,7 @@ def export_accounting_attendance(request: Request, month: str = "", viewType: st
         key = f"{code}:{event_date.day}"
         if viewType == "cargo" and cargo_holiday_bonus_eligible(row.get("trangThaiLenXuongCa"), event_date, holidays_by_date):
             holiday_bonus_eligible_keys.add(key)
-        if viewType == "cargo" and (key not in overtime_events or "len ca" in status):
+        if viewType == "cargo" and "len ca" in status:
             overtime_events[key] = row
         if viewType == "travel":
             travel_mark = travel_roster_mark(row.get("trangThaiLenXuongCa"))
@@ -8588,6 +8668,26 @@ def export_driver_remittance_report(ngay: str = "") -> Response:
     all_orders = all_order_records()
     shared_rows = all_shared_ride_records()
     orders_by_id = {str(row.get("id") or ""): row for row in all_orders}
+
+    # Một lần chỉnh sửa đơn xe ghép cũ có thể để lại cả các dòng khách trước và
+    # sau chỉnh sửa nếu thao tác đánh dấu xóa trên Google Sheets chưa kịp hoàn
+    # tất. Bảng kê phải tuân theo số vé hiện hành của đơn và ưu tiên các dòng
+    # khách được tạo gần nhất, tránh nhân đôi số tiền tài xế phải nộp.
+    shared_rows_by_order: dict[str, list[dict[str, Any]]] = {}
+    for passenger in shared_rows:
+        shared_rows_by_order.setdefault(str(passenger.get("donHangId") or ""), []).append(passenger)
+    current_shared_rows: list[dict[str, Any]] = []
+    for order_id, passengers in shared_rows_by_order.items():
+        parent = orders_by_id.get(order_id, {})
+        expected_count = max(0, int(money_value(parent.get("soVe"))))
+        if expected_count and len(passengers) > expected_count:
+            passengers = sorted(
+                passengers,
+                key=lambda item: parse_existing_datetime(item.get("createdAt")) or datetime.min,
+                reverse=True,
+            )[:expected_count]
+        current_shared_rows.extend(passengers)
+    shared_rows = current_shared_rows
     roster = roster_rows()
     roster_by_plate_date: dict[tuple[str, str], dict[str, Any]] = {}
     roster_by_plate: dict[str, dict[str, Any]] = {}
