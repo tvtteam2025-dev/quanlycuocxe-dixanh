@@ -2085,7 +2085,7 @@ function updateOrderPaymentSummary() {
       <strong>${escapeHtml(formatMoney(summary.revenue)) || "0"}</strong>
     </div>
     <div class="summary-grid">
-      <div><span>Giá tiền / doanh thu</span><strong>${escapeHtml(formatMoney(summary.baseAmount)) || "0"}</strong></div>
+      <div><span>Giá tiền</span><strong>${escapeHtml(formatMoney(summary.baseAmount)) || "0"}</strong></div>
       <div><span>Giảm giá thủ công</span><strong>${escapeHtml(formatMoney(summary.manualDiscount)) || "0"}</strong></div>
       <div><span>Voucher</span><strong>${escapeHtml(formatMoney(summary.voucherDiscount)) || "0"}</strong><small>${escapeHtml(benefitSummaryText(summary.voucherRows))}</small></div>
       <div><span>Khuyến mãi</span><strong>${escapeHtml(formatMoney(summary.promotionDiscount)) || "0"}</strong><small>${escapeHtml(benefitSummaryText(summary.promotionRows))}</small></div>
@@ -4391,7 +4391,7 @@ function openOrderDetails(orderId) {
       hasCommission(row) ? detailArticle("Hoa hồng xe thương quyền", orderCommissionText(row)) : "",
     ]),
     detailSection("Tài chính", "detail-purple", [
-      detailArticle("Giá tiền / doanh thu", formatMoney(row.giaTien)),
+      detailArticle("Giá tiền", formatMoney(row.giaTien)),
       detailArticle("Giảm giá", formatMoney(row.giamGia) || "0"),
       detailArticle("Phụ thu", formatMoney(row.phuThu) || "0"),
       row.phuThu ? detailArticle("Lý do phụ thu", row.lyDoPhuThu || "") : "",
