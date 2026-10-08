@@ -11171,6 +11171,14 @@ def export_orders_detail_report(tuNgay: str = "", denNgay: str = "") -> Response
     order_ids = {str(row.get("id") or "").strip() for row in orders}
     shared_for_orders = [row for row in shared_rows if str(row.get("donHangId") or "").strip() in order_ids]
     benefits_for_orders = [row for row in benefits if str(row.get("donHangId") or "").strip() in order_ids]
+    shared_customer_types_by_order: dict[str, list[str]] = {}
+    for shared_row in shared_for_orders:
+        order_id = str(shared_row.get("donHangId") or "").strip()
+        customer_type = normalize_customer_segment(shared_row.get("loaiKhach"))
+        if order_id and customer_type:
+            shared_customer_types_by_order.setdefault(order_id, [])
+            if customer_type not in shared_customer_types_by_order[order_id]:
+                shared_customer_types_by_order[order_id].append(customer_type)
 
     def display_datetime(value: Any) -> str:
         parsed = parse_existing_datetime(value)
@@ -11309,7 +11317,7 @@ def export_orders_detail_report(tuNgay: str = "", denNgay: str = "") -> Response
                 row.get("diemTra") or "",
                 row.get("loaiHopDong") or "",
                 row.get("soVe") or "",
-                row.get("loaiKhach") or "",
+                row.get("loaiKhach") or ", ".join(shared_customer_types_by_order.get(order_id, [])),
                 row.get("bienKiemSoat") or "",
                 row.get("soHieuXe") or "",
                 row.get("loaiXeDieuDong") or "",
@@ -11337,6 +11345,7 @@ def export_orders_detail_report(tuNgay: str = "", denNgay: str = "") -> Response
         "STT",
         "Mã đơn",
         "Họ tên",
+        "Loại khách",
         "SĐT",
         "CCCD",
         "Giới tính",
@@ -11357,7 +11366,7 @@ def export_orders_detail_report(tuNgay: str = "", denNgay: str = "") -> Response
         "Thực thu",
         "Hóa đơn VAT",
     ]
-    shared_sheet = setup_sheet("Khach xe ghep", shared_headers, [8, 24, 24, 16, 16, 12, 12, 18, 18, 26, 22, 22, 16, 16, 28, 16, 28, 28, 16, 14, 16, 34])
+    shared_sheet = setup_sheet("Khach xe ghep", shared_headers, [8, 24, 24, 14, 16, 16, 12, 12, 18, 18, 26, 22, 22, 16, 16, 28, 16, 28, 28, 16, 14, 16, 34])
     write_title(shared_sheet, f"KHÁCH XE GHÉP ({period_label})", len(shared_headers))
     for index, row in enumerate(shared_for_orders, start=1):
         order_id = str(row.get("donHangId") or "").strip()
@@ -11376,6 +11385,7 @@ def export_orders_detail_report(tuNgay: str = "", denNgay: str = "") -> Response
                 index,
                 order_id,
                 row.get("hoTen") or "",
+                normalize_customer_segment(row.get("loaiKhach")) or "Chưa xác định",
                 row.get("soDienThoai") or "",
                 row.get("soCCCD") or "",
                 row.get("gioiTinh") or "",
@@ -11396,7 +11406,7 @@ def export_orders_detail_report(tuNgay: str = "", denNgay: str = "") -> Response
                 money_value(row.get("thucThu")),
                 invoice_label(row),
             ],
-            money_columns={13, 14, 16, 19, 20, 21},
+            money_columns={14, 15, 17, 20, 21, 22},
         )
 
     benefit_headers = [
@@ -11640,7 +11650,7 @@ def export_orders_detail_report(tuNgay: str = "", denNgay: str = "") -> Response
                 cell.number_format = money_format
 
     append_financial_total_row(order_sheet, len(orders) + 3, 21, [22, 23, 25, 28, 29, 30, 31, 33])
-    append_financial_total_row(shared_sheet, len(shared_for_orders) + 3, 12, [13, 14, 16, 19, 20, 21])
+    append_financial_total_row(shared_sheet, len(shared_for_orders) + 3, 13, [14, 15, 17, 20, 21, 22])
     append_financial_total_row(benefit_sheet, len(benefits_for_orders) + 3, 7, [8])
     append_total_row(customer_sheet, len(sorted_customers) + 3, 2, 5, list(range(6, 14)))
     append_total_row(driver_sheet, len(sorted_drivers) + 3, 2, 6, list(range(7, 16)))
