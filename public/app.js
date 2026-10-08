@@ -3070,6 +3070,8 @@ function renderSharedPassengerFields() {
             <label><span>Phụ thu</span><input class="money-input" data-passenger-field="phuThu" data-passenger-index="${index}" inputmode="numeric" value="0" /></label>
             <label data-passenger-surcharge-reason="${index}" hidden><span>Lý do phụ thu</span><input data-passenger-field="lyDoPhuThu" data-passenger-index="${index}" /></label>
             <label><span>Đã cọc</span><input class="money-input" data-passenger-field="daCoc" data-passenger-index="${index}" inputmode="numeric" value="0" /></label>
+            <label><span>Hoa hồng người giới thiệu</span><input class="money-input" data-passenger-field="soTienHoaHongGioiThieu" data-passenger-index="${index}" inputmode="numeric" value="0" /></label>
+            <label><span>Tên người giới thiệu</span><input data-passenger-field="tenNguoiGioiThieu" data-passenger-index="${index}" placeholder="Nhập tên người giới thiệu" /></label>
           </div>
         </div>
         <details class="shared-passenger-section shared-collapsible">
@@ -3817,6 +3819,8 @@ function sharedPassengerDetailArticles(order) {
     detailArticle("Loại khách", passenger.loaiKhach || "Chưa xác định"),
     detailArticle("Nguồn khách", passenger.nguonKhach || ""),
     detailArticle("Nhân viên nhập", passenger.nhanVienNhap || ""),
+    detailArticle("Hoa hồng người giới thiệu", formatMoney(passenger.soTienHoaHongGioiThieu) || "0"),
+    detailArticle("Tên người giới thiệu", passenger.tenNguoiGioiThieu || ""),
     orderPointsArticle("Điểm đón", passenger.diemDon),
     orderPointsArticle("Điểm trả", passenger.diemTra),
   ]);
@@ -3918,6 +3922,8 @@ function openOrderEditDialog(orderId) {
     els.orderForm.elements.lyDoPhuThu.closest("label").classList.toggle("required", hasSurcharge);
   }
   els.orderForm.elements.daCoc.value = formatMoney(order.daCoc) || "0";
+  els.orderForm.elements.soTienHoaHongGioiThieu.value = formatMoney(order.soTienHoaHongGioiThieu) || "0";
+  els.orderForm.elements.tenNguoiGioiThieu.value = order.tenNguoiGioiThieu || "";
   els.invoiceToggle.checked = normalize(order.yeuCauHoaDon).includes("co");
   els.invoiceFields.classList.toggle("active", els.invoiceToggle.checked);
   els.orderForm.elements.tenCongTy.value = order.tenCongTy || "";
@@ -4396,6 +4402,8 @@ function openOrderDetails(orderId) {
       detailArticle("Thuế VAT (8%)", formatMoney(orderVatAmount(row)) || "0"),
       detailArticle("Tổng thanh toán", formatMoney(orderTotalPaymentAmount(row)) || "0"),
       detailArticle("Khách đã cọc", formatMoney(row.daCoc) || "0"),
+      detailArticle("Hoa hồng người giới thiệu", formatMoney(row.soTienHoaHongGioiThieu) || "0"),
+      detailArticle("Tên người giới thiệu", row.tenNguoiGioiThieu || ""),
       detailArticle("Ghi nhận công nợ", hasDebtRecord ? "Có" : "Không"),
       detailArticle("Số tiền công nợ", hasDebtRecord ? (formatMoney(debtAmount) || "0") : "0"),
       detailArticle("Công nợ cho ai", hasDebtRecord ? (row.congNoChoAi || "—") : "—"),
@@ -5589,12 +5597,16 @@ els.orderForm.addEventListener("submit", async (event) => {
     payload.giamGia = parseMoney(payload.giamGia);
     payload.phuThu = parseMoney(payload.phuThu);
     payload.daCoc = parseMoney(payload.daCoc);
+    payload.soTienHoaHongGioiThieu = parseMoney(payload.soTienHoaHongGioiThieu);
     payload.soVe = Number(payload.soVe || 0);
     if (!payload.ngayGioDi) throw new Error("Vui lòng nhập ngày giờ đi theo định dạng dd/MM/yyyy HH:mm.");
     payload.yeuCauHoaDon = selectedContractType() === "xe_ghep" ? false : els.invoiceToggle.checked;
     payload.congNo = selectedContractType() === "xe_ghep" ? false : Boolean(document.querySelector("#debtToggle")?.checked);
     payload.congNoChoAi = payload.congNoChoAi || "";
     if (payload.congNo && !payload.congNoChoAi.trim()) throw new Error("Vui lòng nhập đối tượng ghi nhận công nợ.");
+    if (selectedContractType() !== "xe_ghep" && payload.soTienHoaHongGioiThieu > 0 && !String(payload.tenNguoiGioiThieu || "").trim()) {
+      throw new Error("Vui lòng nhập tên người giới thiệu khi có tiền hoa hồng.");
+    }
     if (selectedContractType() !== "xe_ghep" && payload.loaiKhach === "B2B" && payload.giaNiemYet <= 0) {
       throw new Error("Vui lòng nhập Giá Niêm Yết cho đơn nguyên chuyến B2B.");
     }
@@ -5613,6 +5625,9 @@ els.orderForm.addEventListener("submit", async (event) => {
         }
         if (String(passenger.loaiKhach || "").toUpperCase() === "B2B" && Number(passenger.giaNiemYet || 0) <= 0) {
           throw new Error(`Vui lòng nhập Giá Niêm Yết cho khách lẻ ${index + 1} B2B.`);
+        }
+        if (Number(passenger.soTienHoaHongGioiThieu || 0) > 0 && !String(passenger.tenNguoiGioiThieu || "").trim()) {
+          throw new Error(`Vui lòng nhập tên người giới thiệu cho khách lẻ ${index + 1}.`);
         }
       });
       const duplicateVoucherError = duplicateSharedVoucherMessage();
@@ -5643,6 +5658,8 @@ els.orderForm.addEventListener("submit", async (event) => {
       payload.diemTra = "";
       payload.giaTien = 0;
       payload.giaNiemYet = 0;
+      payload.soTienHoaHongGioiThieu = 0;
+      payload.tenNguoiGioiThieu = "";
       payload.giamGia = 0;
       payload.phuThu = 0;
       payload.lyDoPhuThu = "";
