@@ -378,6 +378,8 @@ ORDER_HEADERS = [
     "GiaNiemYet",
     "updateAt",
     "updateBy",
+    "soTienHoaHongGioiThieu",
+    "tenNguoiGioiThieu",
 ]
 
 ORDER_HISTORY_HEADERS = [
@@ -459,6 +461,8 @@ SHARED_RIDE_HEADERS = [
     "deletedAt",
     "deletedBy",
     "GiaNiemYet",
+    "soTienHoaHongGioiThieu",
+    "tenNguoiGioiThieu",
 ]
 
 VOUCHER_HEADERS = [
@@ -1089,6 +1093,8 @@ class OrderInput(BaseModel):
     diemTra: str = ""
     khuVucDatXe: str = ""
     giaNiemYet: float = Field(default=0, ge=0)
+    soTienHoaHongGioiThieu: float = Field(default=0, ge=0)
+    tenNguoiGioiThieu: str = ""
     giaTien: float = Field(default=0, ge=0)
     giamGia: float = Field(default=0, ge=0)
     ghiChuGiamGia: str = ""
@@ -1145,6 +1151,8 @@ class SharedPassengerInput(BaseModel):
     diemDon: str = Field(min_length=1)
     diemTra: str = Field(min_length=1)
     giaNiemYet: float = Field(default=0, ge=0)
+    soTienHoaHongGioiThieu: float = Field(default=0, ge=0)
+    tenNguoiGioiThieu: str = ""
     soTien: float = Field(ge=0)
     giamGia: float = Field(default=0, ge=0)
     ghiChuGiamGia: str = ""
@@ -11272,6 +11280,8 @@ def export_orders_detail_report(tuNgay: str = "", denNgay: str = "") -> Response
         "Lái xe",
         "Mã NV lái xe",
         "Giá tiền",
+        "Tên người giới thiệu",
+        "Hoa hồng người giới thiệu",
         "Phụ thu",
         "Lý do phụ thu",
         "Giảm giá",
@@ -11286,7 +11296,7 @@ def export_orders_detail_report(tuNgay: str = "", denNgay: str = "") -> Response
         "Hóa đơn",
         "Ghi chú",
     ]
-    order_widths = [8, 24, 18, 18, 18, 18, 24, 18, 16, 26, 16, 22, 22, 18, 10, 12, 16, 14, 18, 24, 14, 16, 16, 28, 16, 16, 28, 28, 16, 14, 16, 16, 14, 16, 34]
+    order_widths = [8, 24, 18, 18, 18, 18, 24, 18, 16, 26, 16, 22, 22, 18, 10, 12, 16, 14, 18, 24, 14, 16, 24, 18, 16, 28, 16, 16, 28, 28, 16, 14, 16, 16, 14, 16, 34]
     order_sheet = setup_sheet("Don hang", order_headers, order_widths)
     write_title(order_sheet, f"BÁO CÁO CHI TIẾT ĐƠN HÀNG ({period_label})", len(order_headers))
 
@@ -11324,6 +11334,8 @@ def export_orders_detail_report(tuNgay: str = "", denNgay: str = "") -> Response
                 row.get("hoTenLaiXe") or "",
                 row.get("maNVLaiXe") or "",
                 gross,
+                row.get("tenNguoiGioiThieu") or "",
+                money_value(row.get("soTienHoaHongGioiThieu")),
                 money_value(row.get("phuThu")),
                 row.get("lyDoPhuThu") or "",
                 manual_discount,
@@ -11338,7 +11350,7 @@ def export_orders_detail_report(tuNgay: str = "", denNgay: str = "") -> Response
                 invoice_label(row),
                 row.get("ghiChu") or "",
             ],
-            money_columns={22, 23, 25, 28, 29, 30, 31, 33},
+            money_columns={22, 24, 25, 27, 30, 31, 32, 33, 35},
         )
 
     shared_headers = [
@@ -11346,6 +11358,8 @@ def export_orders_detail_report(tuNgay: str = "", denNgay: str = "") -> Response
         "Mã đơn",
         "Họ tên",
         "Loại khách",
+        "Tên người giới thiệu",
+        "Hoa hồng người giới thiệu",
         "SĐT",
         "CCCD",
         "Giới tính",
@@ -11366,7 +11380,7 @@ def export_orders_detail_report(tuNgay: str = "", denNgay: str = "") -> Response
         "Thực thu",
         "Hóa đơn VAT",
     ]
-    shared_sheet = setup_sheet("Khach xe ghep", shared_headers, [8, 24, 24, 14, 16, 16, 12, 12, 18, 18, 26, 22, 22, 16, 16, 28, 16, 28, 28, 16, 14, 16, 34])
+    shared_sheet = setup_sheet("Khach xe ghep", shared_headers, [8, 24, 24, 14, 24, 18, 16, 16, 12, 12, 18, 18, 26, 22, 22, 16, 16, 28, 16, 28, 28, 16, 14, 16, 34])
     write_title(shared_sheet, f"KHÁCH XE GHÉP ({period_label})", len(shared_headers))
     for index, row in enumerate(shared_for_orders, start=1):
         order_id = str(row.get("donHangId") or "").strip()
@@ -11386,6 +11400,8 @@ def export_orders_detail_report(tuNgay: str = "", denNgay: str = "") -> Response
                 order_id,
                 row.get("hoTen") or "",
                 normalize_customer_segment(row.get("loaiKhach")) or "Chưa xác định",
+                row.get("tenNguoiGioiThieu") or "",
+                money_value(row.get("soTienHoaHongGioiThieu")),
                 row.get("soDienThoai") or "",
                 row.get("soCCCD") or "",
                 row.get("gioiTinh") or "",
@@ -11406,7 +11422,7 @@ def export_orders_detail_report(tuNgay: str = "", denNgay: str = "") -> Response
                 money_value(row.get("thucThu")),
                 invoice_label(row),
             ],
-            money_columns={14, 15, 17, 20, 21, 22},
+            money_columns={6, 16, 17, 19, 22, 23, 24},
         )
 
     benefit_headers = [
@@ -11649,8 +11665,8 @@ def export_orders_detail_report(tuNgay: str = "", denNgay: str = "") -> Response
             if cell.column in money_columns:
                 cell.number_format = money_format
 
-    append_financial_total_row(order_sheet, len(orders) + 3, 21, [22, 23, 25, 28, 29, 30, 31, 33])
-    append_financial_total_row(shared_sheet, len(shared_for_orders) + 3, 13, [14, 15, 17, 20, 21, 22])
+    append_financial_total_row(order_sheet, len(orders) + 3, 21, [22, 24, 25, 27, 30, 31, 32, 33, 35])
+    append_financial_total_row(shared_sheet, len(shared_for_orders) + 3, 5, [6, 16, 17, 19, 22, 23, 24])
     append_financial_total_row(benefit_sheet, len(benefits_for_orders) + 3, 7, [8])
     append_total_row(customer_sheet, len(sorted_customers) + 3, 2, 5, list(range(6, 14)))
     append_total_row(driver_sheet, len(sorted_drivers) + 3, 2, 6, list(range(7, 16)))
@@ -11684,6 +11700,13 @@ def create_order(request: Request, payload: OrderInput) -> dict[str, Any]:
         raise HTTPException(status_code=422, detail="Ngày giờ đi không hợp lệ.") from exc
     if tour is None:
         raise HTTPException(status_code=404, detail="Không tìm thấy hợp đồng/tuyến.")
+    if payload.loaiHopDong == "xe_nguyen_chuyen":
+        if payload.soTienHoaHongGioiThieu > 0 and not payload.tenNguoiGioiThieu.strip():
+            raise HTTPException(status_code=422, detail="Vui lòng nhập tên người giới thiệu khi có tiền hoa hồng.")
+    else:
+        for index, passenger in enumerate(payload.khachXeGhep, start=1):
+            if passenger.soTienHoaHongGioiThieu > 0 and not passenger.tenNguoiGioiThieu.strip():
+                raise HTTPException(status_code=422, detail=f"Khách lẻ {index} phải nhập tên người giới thiệu khi có tiền hoa hồng.")
 
     customer: dict[str, Any]
     if payload.loaiHopDong == "xe_nguyen_chuyen":
@@ -11896,6 +11919,8 @@ def create_order(request: Request, payload: OrderInput) -> dict[str, Any]:
                     "",
                     "",
                     passenger.giaNiemYet,
+                    passenger.soTienHoaHongGioiThieu,
+                    passenger.tenNguoiGioiThieu,
                 ]
             )
         net_amount = max(revenue_amount + vat_amount - deposit_amount, 0)
@@ -11971,6 +11996,8 @@ def create_order(request: Request, payload: OrderInput) -> dict[str, Any]:
         payload.giaNiemYet if payload.loaiHopDong == "xe_nguyen_chuyen" else sum(passenger.giaNiemYet for passenger in payload.khachXeGhep),
         now_iso(),
         current_user_display_name(request),
+        payload.soTienHoaHongGioiThieu if payload.loaiHopDong == "xe_nguyen_chuyen" else sum(passenger.soTienHoaHongGioiThieu for passenger in payload.khachXeGhep),
+        payload.tenNguoiGioiThieu if payload.loaiHopDong == "xe_nguyen_chuyen" else ", ".join(dict.fromkeys(passenger.tenNguoiGioiThieu.strip() for passenger in payload.khachXeGhep if passenger.tenNguoiGioiThieu.strip())),
     ]
     if len(row) != len(ORDER_HEADERS):
         raise HTTPException(status_code=500, detail="Cấu trúc dữ liệu đơn hàng không hợp lệ.")
@@ -12099,6 +12126,7 @@ def update_shared_order(
             passenger.phuThu, passenger.lyDoPhuThu if passenger.phuThu > 0 else "",
             passenger.loaiKhach,
             "", "", "", passenger.giaNiemYet,
+            passenger.soTienHoaHongGioiThieu, passenger.tenNguoiGioiThieu,
         ])
 
     before = dict(order)
@@ -12119,6 +12147,8 @@ def update_shared_order(
         "phuThu": sum(item.phuThu for item in payload.khachXeGhep),
         "lyDoPhuThu": "", "soCho": payload.soCho,
         "GiaNiemYet": sum(item.giaNiemYet for item in payload.khachXeGhep),
+        "soTienHoaHongGioiThieu": sum(item.soTienHoaHongGioiThieu for item in payload.khachXeGhep),
+        "tenNguoiGioiThieu": ", ".join(dict.fromkeys(item.tenNguoiGioiThieu.strip() for item in payload.khachXeGhep if item.tenNguoiGioiThieu.strip())),
     })
     mark_order_updated(order, request)
     update_row_by_headers(worksheet, row_number, ORDER_HEADERS, order)
@@ -12157,6 +12187,12 @@ def update_order(order_id: str, payload: OrderInput, request: Request) -> dict[s
         raise HTTPException(status_code=409, detail="Đơn hàng đã hoàn thành, không thể chỉnh sửa.")
     existing_shared = normalize_text(order.get("loaiHopDong")).find("ghep") >= 0
     requested_shared = payload.loaiHopDong == "xe_ghep"
+    if requested_shared:
+        for index, passenger in enumerate(payload.khachXeGhep, start=1):
+            if passenger.soTienHoaHongGioiThieu > 0 and not passenger.tenNguoiGioiThieu.strip():
+                raise HTTPException(status_code=422, detail=f"Khách lẻ {index} phải nhập tên người giới thiệu khi có tiền hoa hồng.")
+    elif payload.soTienHoaHongGioiThieu > 0 and not payload.tenNguoiGioiThieu.strip():
+        raise HTTPException(status_code=422, detail="Vui lòng nhập tên người giới thiệu khi có tiền hoa hồng.")
     if existing_shared != requested_shared:
         raise HTTPException(status_code=422, detail="Không thể đổi loại đơn hàng khi chỉnh sửa.")
     if requested_shared:
@@ -12255,6 +12291,8 @@ def update_order(order_id: str, payload: OrderInput, request: Request) -> dict[s
             "ngayGioDi": payload.ngayGioDi,
             "giaTien": payload.giaTien,
             "GiaNiemYet": payload.giaNiemYet,
+            "soTienHoaHongGioiThieu": payload.soTienHoaHongGioiThieu,
+            "tenNguoiGioiThieu": payload.tenNguoiGioiThieu.strip(),
             "giamGia": manual_discount,
             "daCoc": deposit_amount,
             "thucThu": net_amount,
