@@ -3807,6 +3807,21 @@ function orderIsSharedRide(order) {
   return normalize(order.loaiHopDong).includes("ghep");
 }
 
+function sharedPassengerDetailArticles(order) {
+  if (!orderIsSharedRide(order) || !Array.isArray(order.khachXeGhep)) return [];
+  return order.khachXeGhep.flatMap((passenger, index) => [
+    detailArticle(
+      `Khách ${index + 1}`,
+      `${passenger.hoTen || "Chưa có tên"}${passenger.soDienThoai ? ` - ${passenger.soDienThoai}` : ""}`,
+    ),
+    detailArticle("Loại khách", passenger.loaiKhach || "Chưa xác định"),
+    detailArticle("Nguồn khách", passenger.nguonKhach || ""),
+    detailArticle("Nhân viên nhập", passenger.nhanVienNhap || ""),
+    orderPointsArticle("Điểm đón", passenger.diemDon),
+    orderPointsArticle("Điểm trả", passenger.diemTra),
+  ]);
+}
+
 function canEditOrderInline(order) {
   return order && !orderIsDone(order) && canOperateOrders();
 }
@@ -4352,6 +4367,9 @@ function openOrderDetails(orderId) {
       detailArticle("Loại đơn", row.loaiHopDong || ""),
       detailArticle("Khách hàng", `${row.tenKhach || ""}${row.soDienThoai ? ` - ${row.soDienThoai}` : ""}`),
     ]),
+    orderIsSharedRide(row) && row.khachXeGhep?.length
+      ? detailSection("Khách xe ghép", "detail-blue", sharedPassengerDetailArticles(row))
+      : "",
     detailSection("Hành trình", "detail-amber", [
       detailArticle("Tuyến", row.tuyen || ""),
       orderPointsArticle("Điểm đón", row.diemDon),
