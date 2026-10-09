@@ -971,21 +971,21 @@ function parseMoney(value) {
 }
 
 function orderNetAmount(order) {
-  if (order.thucThu !== undefined && String(order.thucThu || "").trim() !== "") return parseMoney(order.thucThu);
-  return Math.max(
-    parseMoney(order.giaTien) + parseMoney(order.phuThu) - parseMoney(order.giamGia)
-      - parseMoney(order.tongUuDai) + parseMoney(order.thueVAT) - parseMoney(order.daCoc),
-    0,
-  );
+  if (normalize(order.congNo) === "co") return 0;
+  return Math.max(orderTotalPaymentAmount(order) - parseMoney(order.daCoc), 0);
 }
 
 function orderRevenueAmount(order) {
   return Math.max(parseMoney(order.giaTien) + parseMoney(order.phuThu) - parseMoney(order.giamGia) - parseMoney(order.tongUuDai), 0);
 }
 
+function orderReferralCommissionAmount(order) {
+  return parseMoney(order.soTienHoaHongGioiThieu);
+}
+
 function orderPayrollRevenueAmount(order) {
   return Math.max(
-    orderRevenueAmount(order) + parseMoney(order.uuDaiTinhDoanhThuLaiXe),
+    orderRevenueAmount(order) + parseMoney(order.uuDaiTinhDoanhThuLaiXe) - orderReferralCommissionAmount(order),
     0,
   );
 }
@@ -3971,7 +3971,6 @@ function openAssignVehicleDialog(orderId) {
     detailArticle("Tuyến", order.tuyen || order.loaiHopDong || ""),
     orderPointsArticle("Điểm đón", order.diemDon),
     orderPointsArticle("Điểm trả", order.diemTra),
-    detailArticle("Thực thu", formatMoney(orderRevenueAmount(order)) || "0"),
   ]);
   renderVehicleOptions();
   if (order.bienKiemSoat && [...els.orderVehicleSelect.options].some((option) => option.value === order.bienKiemSoat)) {
@@ -4015,7 +4014,13 @@ function openCompleteDialog(orderId) {
     detailArticle("Ưu đãi", formatMoney(order.tongUuDai) || "0"),
     detailArticle("Voucher", order.voucherCodes || ""),
     detailArticle("Khuyến mãi", order.khuyenMai || ""),
-    detailArticle("Thực thu", formatMoney(orderRevenueAmount(order)) || "0"),
+    orderReferralCommissionAmount(order) > 0
+      ? detailArticle("Hoa hồng người giới thiệu", formatMoney(orderReferralCommissionAmount(order)) || "0")
+      : "",
+    orderReferralCommissionAmount(order) > 0 || String(order.tenNguoiGioiThieu || "").trim()
+      ? detailArticle("Tên người giới thiệu", order.tenNguoiGioiThieu || "")
+      : "",
+    detailArticle("Doanh thu tính lương", formatMoney(orderPayrollRevenueAmount(order)) || "0"),
     detailArticle("Khách đã cọc", formatMoney(order.daCoc) || "0"),
     detailArticle("Còn phải thu", formatMoney(orderNetAmount(order)) || "0"),
   ].join("");
@@ -6238,4 +6243,3 @@ async function initializeApp() {
 
 initializeApp();
 window.setInterval(checkAppVersion, APP_VERSION_CHECK_INTERVAL_MS);
-
