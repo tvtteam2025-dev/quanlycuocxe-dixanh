@@ -8716,6 +8716,36 @@ def order_customer_revenue(row: dict[str, Any]) -> float:
     )
 
 
+def order_total_payment(row: dict[str, Any]) -> float:
+    return order_customer_revenue(row) + money_value(row.get("thueVAT"))
+
+
+def order_remaining_due(row: dict[str, Any]) -> float:
+    if normalize_text(row.get("congNo")) in {"co", "yes", "true", "1"}:
+        return 0
+    return max(order_total_payment(row) - money_value(row.get("daCoc")), 0)
+
+
+def passenger_customer_revenue(row: dict[str, Any]) -> float:
+    return driver_revenue_amount(
+        row.get("soTien"),
+        row.get("giamGia"),
+        row.get("tongUuDai"),
+        row.get("thueVAT"),
+        row.get("phuThu"),
+    )
+
+
+def passenger_total_payment(row: dict[str, Any]) -> float:
+    return passenger_customer_revenue(row) + money_value(row.get("thueVAT"))
+
+
+def passenger_remaining_due(row: dict[str, Any]) -> float:
+    if normalize_text(row.get("congNo")) in {"co", "yes", "true", "1"}:
+        return 0
+    return max(passenger_total_payment(row) - money_value(row.get("daCoc")), 0)
+
+
 def order_driver_remittance(row: dict[str, Any]) -> float:
     if normalize_text(row.get("congNo")) in {"co", "yes", "true", "1"}:
         return 0
@@ -9466,17 +9496,22 @@ def export_driver_revenue_report(tuNgay: str = "", denNgay: str = "") -> Respons
         date_source: Any,
         debt_source: dict[str, Any] | None = None,
         benefit_driver_revenue: Any = 0,
+        referral_commission: Any = 0,
     ) -> None:
         if "huy" in normalize_text(order.get("trangThai")) or not in_range(date_source):
             return
         customer_revenue = driver_revenue_amount(gross, manual, benefits, vat, surcharge)
-        driver_revenue = driver_revenue_amount(
-            gross,
-            manual,
-            benefits,
-            vat,
-            surcharge,
-            benefit_driver_revenue,
+        driver_revenue = max(
+            driver_revenue_amount(
+                gross,
+                manual,
+                benefits,
+                vat,
+                surcharge,
+                benefit_driver_revenue,
+            )
+            - money_value(referral_commission),
+            0,
         )
         debt_record = debt_source or order
         is_debt = normalize_text(debt_record.get("congNo")) in {"co", "yes", "true", "1"}
@@ -9530,6 +9565,7 @@ def export_driver_revenue_report(tuNgay: str = "", denNgay: str = "") -> Respons
             order.get("daCoc"),
             order.get("ngayGioDi") or order.get("createdAt"),
             benefit_driver_revenue=order.get("uuDaiTinhDoanhThuLaiXe"),
+            referral_commission=order.get("soTienHoaHongGioiThieu"),
         )
     for passenger in shared_rows:
         order = orders_by_id.get(str(passenger.get("donHangId") or ""))
@@ -9548,6 +9584,7 @@ def export_driver_revenue_report(tuNgay: str = "", denNgay: str = "") -> Respons
             passenger.get("ngayGioDi") or order.get("ngayGioDi") or passenger.get("createdAt"),
             passenger,
             shared_counted_benefit(passenger),
+            passenger.get("soTienHoaHongGioiThieu"),
         )
     rows.sort(key=lambda row: (str(row[3]), row[0]))
 
@@ -9793,7 +9830,7 @@ def export_summary_report(ngay: str = "", thang: str = "") -> Response:
         return parse_existing_datetime(row.get("ngayGioDi")) or datetime.min
 
     def order_gross(row: dict[str, Any]) -> float:
-        return money_value(row.get("giaTien")) + money_value(row.get("phuThu"))
+        return order_customer_revenue(row)
 
     def order_discount(row: dict[str, Any]) -> float:
         return money_value(row.get("giamGia")) + money_value(row.get("tongUuDai"))
@@ -9802,7 +9839,7 @@ def export_summary_report(ngay: str = "", thang: str = "") -> Response:
         return money_value(row.get("daCoc"))
 
     def order_due(row: dict[str, Any]) -> float:
-        return max(order_gross(row) - order_discount(row) - order_deposit(row), 0)
+        return order_remaining_due(row)
 
     def display_date(value: Any) -> str:
         parsed = parse_existing_datetime(value)
@@ -9848,7 +9885,9 @@ def export_summary_report(ngay: str = "", thang: str = "") -> Response:
         dates = [order_start(row) for row in related_orders]
         dates.extend(parse_existing_datetime(row.get("ngayGioDi")) or datetime.min for row in related_shared)
         last_date = max([date for date in dates if date != datetime.min], default=None)
-        revenue = sum(order_gross(row) for row in related_orders) + sum(money_value(row.get("soTien")) for row in related_shared)
+        revenue = sum(order_customer_revenue(row) for row in related_orders) + sum(
+            passenger_customer_revenue(row) for row in related_shared
+        )
         address = str(customer.get("diaChi") or "").strip() or customer_address_by_phone.get(phone, "")
         if not address:
             related_shared_by_date = sorted(
@@ -10330,7 +10369,7 @@ def export_customers_report() -> Response:
             continue
         current = activity.setdefault(key, {"count": 0, "revenue": 0.0, "last": None, "address": ""})
         current["count"] += 1
-        current["revenue"] += money_value(order.get("giaTien")) + money_value(order.get("phuThu")) - money_value(order.get("giamGia")) - money_value(order.get("tongUuDai"))
+        current["revenue"] += order_customer_revenue(order)
         started_at = order_start(order)
         if started_at and is_later_datetime(started_at, current["last"]):
             current["last"] = started_at
@@ -10350,7 +10389,7 @@ def export_customers_report() -> Response:
             continue
         current = activity.setdefault(key, {"count": 0, "revenue": 0.0, "last": None, "address": ""})
         current["count"] += 1
-        current["revenue"] += money_value(passenger.get("thucThu"))
+        current["revenue"] += passenger_customer_revenue(passenger)
         started_at = order_start(passenger)
         if started_at and is_later_datetime(started_at, current["last"]):
             current["last"] = started_at
@@ -11163,7 +11202,7 @@ def export_voucher_report(thang: str = "") -> Response:
                     money_value(shared.get("giamGia") if shared else order.get("giamGia")),
                     money_value(shared.get("tongUuDai") if shared else order.get("tongUuDai")),
                     money_value(usage.get("soTienGiam")),
-                    money_value(shared.get("thucThu") if shared else order.get("thucThu")),
+                    passenger_customer_revenue(shared) if shared else order_customer_revenue(order),
                     order.get("trangThai") or "",
                 ],
                 money_columns={15, 16, 17, 18, 19},
@@ -11502,8 +11541,8 @@ def export_orders_detail_report(tuNgay: str = "", denNgay: str = "") -> Response
         manual_discount = money_value(row.get("giamGia"))
         benefit_total = money_value(row.get("tongUuDai"))
         deposit = money_value(row.get("daCoc"))
-        net = money_value(row.get("thucThu"))
-        due = max(net - deposit, 0)
+        net = order_customer_revenue(row)
+        due = order_remaining_due(row)
         append_row(
             order_sheet,
             index + 2,
@@ -11615,7 +11654,7 @@ def export_orders_detail_report(tuNgay: str = "", denNgay: str = "") -> Response
                 promo_text,
                 money_value(row.get("tongUuDai")),
                 money_value(row.get("daCoc")),
-                money_value(row.get("thucThu")),
+                passenger_customer_revenue(row),
                 invoice_label(row),
             ],
             money_columns={6, 16, 17, 19, 22, 23, 24},
@@ -11661,7 +11700,7 @@ def export_orders_detail_report(tuNgay: str = "", denNgay: str = "") -> Response
         vat = money_value(row.get("thueVAT"))
         total_payment = money_value(row.get("tongThanhToan")) or revenue + vat
         deposit = money_value(row.get("daCoc"))
-        due = money_value(row.get("thucThu"))
+        due = passenger_remaining_due(row) if shared else order_remaining_due(row)
         return {
             "gross": gross,
             "discount": discount,
@@ -12653,13 +12692,7 @@ def assign_order_vehicle(order_id: str, payload: AssignVehicleInput, request: Re
     order["ngayGioDuKienKetThuc"] = payload.ngayGioDuKienKetThuc
     order["loaiXeDieuDong"] = vehicle_type
     order["tyLeNopLai"] = commission_rate
-    driver_revenue = max(
-        money_value(order.get("giaTien"))
-        + money_value(order.get("phuThu"))
-        - money_value(order.get("giamGia"))
-        - money_value(order.get("tongUuDai")),
-        0,
-    )
+    driver_revenue = order_customer_revenue(order)
     new_commission_amount = round_up_ten_thousand(driver_revenue * commission_rate / 100)
     old_commission_amount = money_value(before_order.get("soTienNopLai"))
     order["soTienNopLai"] = new_commission_amount
