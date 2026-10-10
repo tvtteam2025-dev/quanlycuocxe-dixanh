@@ -6873,10 +6873,15 @@ def export_accounting_payroll(request: Request, month: str = "", viewType: str =
             deduction_by_type[deduction_type] = deduction_by_type.get(deduction_type, 0) + round(float(item.get("amount") or 0))
         values += [row["totalAllowance"]]
         if viewType == "travel":
+            required_days = float(row.get("requiredDays") or 0)
             work_days = float(row.get("workDays") or 0)
             regular_workday_salary = (
-                round((float(row.get("baseSalary") or 0) + float(row.get("totalAllowance") or 0)) / work_days)
-                if work_days > 0
+                round(
+                    (float(row.get("baseSalary") or 0) + float(row.get("totalAllowance") or 0))
+                    / required_days
+                    * work_days
+                )
+                if required_days > 0
                 else 0
             )
             values += [regular_workday_salary]
