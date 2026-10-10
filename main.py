@@ -128,7 +128,7 @@ TRAVEL_REVENUE_BONUS_RATE = 0.10
 FUEL_PRICES_SHEET_NAME = os.getenv("FUEL_PRICES_SHEET_NAME", "GIA_XANG_THEO_THANG")
 FUEL_PRICE_HEADERS = ["month", "donGiaLit", "createdBy", "createdAt", "updatedBy", "updatedAt", "status"]
 DRIVER_SALARIES_SHEET_NAME = os.getenv("DRIVER_SALARIES_SHEET_NAME", "KHAI_BAO_LUONG_LAI_XE")
-DRIVER_SALARY_HEADERS = ["employeeCode", "employeeName", "bankName", "accountNumber", "accountHolder", "effectiveMonth", "baseSalary", "allowance", "createdBy", "createdAt", "allowanceType", "status", "allowancesJson"]
+DRIVER_SALARY_HEADERS = ["employeeCode", "employeeName", "bankName", "accountNumber", "accountHolder", "effectiveMonth", "baseSalary", "allowance", "createdBy", "createdAt", "allowanceType", "status", "allowancesJson", "lunchBreakHours"]
 DRIVER_AREAS_SHEET_NAME = os.getenv("DRIVER_AREAS_SHEET_NAME", "KHAI_BAO_KHU_VUC_LAI_XE")
 DRIVER_AREA_HEADERS = ["employeeCode", "employeeName", "operatingArea", "status", "updatedBy", "updatedAt"]
 ALLOWANCE_TYPES_SHEET_NAME = os.getenv("ALLOWANCE_TYPES_SHEET_NAME", "DANH_MUC_PHU_CAP")
@@ -1320,6 +1320,7 @@ class DriverSalaryInput(BaseModel):
     accountHolder: str = Field(default="", max_length=150)
     effectiveMonth: str = Field(pattern=r"^\d{4}-\d{2}$")
     baseSalary: float = Field(ge=0)
+    lunchBreakHours: float = Field(default=0, ge=0, le=24)
     allowance: float = Field(default=0, ge=0)
     allowanceType: str = Field(default="Khác", min_length=1, max_length=100)
     allowances: list[DriverSalaryAllowanceInput] = Field(default_factory=list)
@@ -5535,6 +5536,7 @@ def save_driver_salary(payload: DriverSalaryInput, request: Request) -> dict[str
         "accountHolder": payload.accountHolder.strip().upper(),
         "effectiveMonth": payload.effectiveMonth,
         "baseSalary": round(payload.baseSalary),
+        "lunchBreakHours": round(payload.lunchBreakHours, 2),
         "allowance": total_allowance,
         "allowanceType": ", ".join(item["type"] for item in allowances) or "Khác",
         "allowancesJson": json.dumps(allowances, ensure_ascii=False, separators=(",", ":")),
@@ -5717,6 +5719,15 @@ def rounded_payroll_overtime_minutes(raw_value: Any) -> int:
     if minutes <= 45:
         return hours * 60 + 30
     return (hours + 1) * 60
+
+
+def payable_cargo_overtime_minutes(raw_value: Any, lunch_break_hours: Any) -> int:
+    rounded_minutes = rounded_payroll_overtime_minutes(raw_value)
+    try:
+        break_minutes = round(max(0.0, min(24.0, float(lunch_break_hours or 0))) * 60)
+    except (TypeError, ValueError):
+        break_minutes = 0
+    return max(0, rounded_minutes - break_minutes)
 
 
 def travel_roster_mark(status: Any) -> str:
@@ -5943,13 +5954,17 @@ def accounting_payroll_rows(month: str, view_type: str) -> dict[str, Any]:
             allowances = []
         if not allowances and float(salary.get("allowance") or 0) > 0:
             allowances = merge_allowances([{"type": salary.get("allowanceType") or "Khác", "amount": salary.get("allowance") or 0}])
+        lunch_break_hours = max(0.0, min(24.0, float(salary.get("lunchBreakHours") or 0)))
         work_days = sum(1 for day in range(1, day_count + 1) if (overrides.get(f"{code}:{day}") or events.get(f"{code}:{day}") or "KL") == "X")
         overtime_minutes = 0
         if view_type == "cargo":
             for day in range(1, day_count + 1):
                 key = f"{code}:{day}"
                 if (overrides.get(key) or events.get(key) or "KL") == "X":
-                    overtime_minutes += rounded_payroll_overtime_minutes((overtime_events.get(key) or {}).get("soGioTangCa"))
+                    overtime_minutes += payable_cargo_overtime_minutes(
+                        (overtime_events.get(key) or {}).get("soGioTangCa"),
+                        lunch_break_hours,
+                    )
         base_salary = round(float(salary.get("baseSalary") or 0))
         total_allowance = sum(item["amount"] for item in allowances)
         overtime_pay = round(overtime_minutes / 60 * 30_000) if view_type == "cargo" else 0
@@ -6003,7 +6018,7 @@ def accounting_payroll_rows(month: str, view_type: str) -> dict[str, Any]:
         payroll_note = str((payroll_notes.get(code) or {}).get("note") or "").strip()
         if not payroll_note:
             payroll_note = next((str(item.get("note") or "").strip() for item in deductions if normalize_text(item.get("type")) == "khac" and str(item.get("note") or "").strip()), "")
-        output_rows.append({**driver, "position": position, "requiredDays": required_days, "workDays": work_days, "attendanceCreditedDays": attendance_credited_days, "baseSalary": base_salary, "allowances": allowances, "totalAllowance": total_allowance, "regularWorkdaySalary": regular_workday_salary, "overtimeMinutes": overtime_minutes, "overtimePay": overtime_pay, "remainingLeaveDays": remaining_leave_days, "extraWorkdayBonus": extra_workday_bonus, "attendanceBonusRate": attendance_bonus_rate_value, "attendanceBonus": attendance_bonus, "holidayWorkDays": holiday_work_days, "holidayBonusPerDay": holiday_bonus_per_day, "holidayBonus": holiday_bonus, "holidayDates": [item["date"] for item in holiday_details], "holidayDetails": holiday_details, "travelRevenue": travel_revenue, "travelRevenueBonus": travel_revenue_bonus, "fuelSavingBonus": fuel_saving_bonus, "fuelOveruseCharge": fuel_overuse_charge, "deductions": deductions, "totalDeduction": total_deduction, "grossSalary": gross_salary, "totalSalary": net_salary, "bankName": str(salary.get("bankName") or ""), "accountNumber": str(salary.get("accountNumber") or ""), "accountHolder": str(salary.get("accountHolder") or ""), "salaryEffectiveMonth": str(salary.get("effectiveMonth") or ""), "salaryDeclared": bool(salary), "payrollNote": payroll_note})
+        output_rows.append({**driver, "position": position, "requiredDays": required_days, "workDays": work_days, "attendanceCreditedDays": attendance_credited_days, "baseSalary": base_salary, "allowances": allowances, "totalAllowance": total_allowance, "regularWorkdaySalary": regular_workday_salary, "lunchBreakHours": lunch_break_hours, "overtimeMinutes": overtime_minutes, "overtimePay": overtime_pay, "remainingLeaveDays": remaining_leave_days, "extraWorkdayBonus": extra_workday_bonus, "attendanceBonusRate": attendance_bonus_rate_value, "attendanceBonus": attendance_bonus, "holidayWorkDays": holiday_work_days, "holidayBonusPerDay": holiday_bonus_per_day, "holidayBonus": holiday_bonus, "holidayDates": [item["date"] for item in holiday_details], "holidayDetails": holiday_details, "travelRevenue": travel_revenue, "travelRevenueBonus": travel_revenue_bonus, "fuelSavingBonus": fuel_saving_bonus, "fuelOveruseCharge": fuel_overuse_charge, "deductions": deductions, "totalDeduction": total_deduction, "grossSalary": gross_salary, "totalSalary": net_salary, "bankName": str(salary.get("bankName") or ""), "accountNumber": str(salary.get("accountNumber") or ""), "accountHolder": str(salary.get("accountHolder") or ""), "salaryEffectiveMonth": str(salary.get("effectiveMonth") or ""), "salaryDeclared": bool(salary), "payrollNote": payroll_note})
     deduction_types = order_deduction_types([str(item.get("type") or "Khoản trừ").strip() or "Khoản trừ" for row in output_rows for item in (row.get("deductions") or [])])
     return {"month": month, "viewType": view_type, "dayCount": day_count, "requiredDays": required_days, "bonusAmount": bonus_amount, "holidays": list(holidays_by_date.values()), "holidayBonusTotal": sum(row.get("holidayBonus", 0) for row in output_rows), "extraWorkdayBonusTotal": sum(row.get("extraWorkdayBonus", 0) for row in output_rows), "travelRevenueTotal": sum(row.get("travelRevenue", 0) for row in output_rows), "travelRevenueBonusRate": round(TRAVEL_REVENUE_BONUS_RATE * 100) if view_type == "travel" else 0, "travelRevenueBonusTotal": sum(row.get("travelRevenueBonus", 0) for row in output_rows), "fuelSavingBonusTotal": sum(row.get("fuelSavingBonus", 0) for row in output_rows), "fuelOveruseChargeTotal": sum(row.get("fuelOveruseCharge", 0) for row in output_rows), "deductionTotal": sum(row.get("totalDeduction", 0) for row in output_rows), "deductionTypes": deduction_types, "overtimeRate": 30_000 if view_type == "cargo" else 0, "rows": output_rows, "locked": False, "lockedBy": "", "lockedAt": "", "fetchedAt": now_iso()}
 
@@ -6466,6 +6481,7 @@ def _build_driver_payslip_workbook(
     if not is_cargo:
         metric("Lương cơ bản theo ngày công thường", driver.get("regularWorkdaySalary", 0))
     if is_cargo:
+        metric("Giờ nghỉ trưa mỗi ngày", driver.get("lunchBreakHours", 0), "giờ")
         metric("Giờ tăng ca", round(float(driver.get("overtimeMinutes") or 0) / 60, 2), "giờ")
         metric("Tiền tăng ca", driver.get("overtimePay", 0))
         metric("Số ngày còn phép trong tháng", driver.get("remainingLeaveDays", 0), "ngày")
@@ -6506,6 +6522,7 @@ def _build_driver_payslip_workbook(
     )
     if is_cargo:
         formula_note += "Thưởng đủ công: Nhân Viên Áp Tải 500.000 VNĐ, các chức vụ Xe Hàng khác 1.000.000 VNĐ. "
+        formula_note += "Giờ tăng ca tính lương mỗi ngày = tối đa(Giờ tăng ca ghi nhận - Giờ nghỉ trưa, 0). "
         formula_note += "Thưởng ngày công tăng ca = ((Lương cơ bản + Phụ cấp) / Công chuẩn) × 1,5 × Số ngày còn phép. "
     formula_note += "Thực nhận = Lương gộp - Tổng khoản trừ." if is_cargo else "Thưởng đủ công khi Công thực tế + Số ngày lễ đã khai báo ≥ Công chuẩn. Thực nhận = Lương cơ bản theo ngày công thường - Tổng khoản trừ + Thưởng đủ công + Thưởng ngày lễ + Thưởng doanh thu 10% + Thưởng tiết kiệm xăng - Thu vượt định mức."
     summary.cell(current_row, 1, formula_note)
@@ -6853,6 +6870,8 @@ def export_accounting_payroll(request: Request, month: str = "", viewType: str =
     headers = ["STT", "Mã NV", "Họ và tên", "Công chuẩn", "Công thực tế", "Lương cơ bản", *allowance_types, "Tổng phụ cấp"]
     if viewType == "travel":
         headers += ["Lương cơ bản theo ngày công thường"]
+    else:
+        headers += ["Giờ nghỉ trưa/ngày"]
     headers += [*deduction_types, "Tổng khoản trừ"]
     if viewType == "cargo":
         headers += ["Giờ tăng ca", "Tiền tăng ca", "Số ngày còn phép trong tháng", "Tiền thưởng ngày công tăng ca"]
@@ -6891,6 +6910,8 @@ def export_accounting_payroll(request: Request, month: str = "", viewType: str =
         if viewType == "travel":
             regular_workday_salary = round(float(row.get("regularWorkdaySalary") or 0))
             values += [regular_workday_salary]
+        else:
+            values += [row.get("lunchBreakHours", 0)]
         values += [deduction_by_type.get(deduction_type, 0) for deduction_type in deduction_types]
         values += [row.get("totalDeduction", 0)]
         deduction_notes = []
@@ -6936,10 +6957,14 @@ def export_accounting_payroll(request: Request, month: str = "", viewType: str =
                     cell.number_format = '#,##0'
                 elif header == "Giờ tăng ca":
                     cell.number_format = '[h]:mm'
+                elif header == "Giờ nghỉ trưa/ngày":
+                    cell.number_format = '0.##'
         sheet.row_dimensions[index + 3].height = 24
     widths = [6, 12, 25, 12, 12, 16] + [20] * len(allowance_types) + [16]
     if viewType == "travel":
         widths += [24]
+    else:
+        widths += [18]
     widths += [20] * len(deduction_types) + [16]
     widths += [14, 16, 22, 24] if viewType == "cargo" else []
     widths += [18, 16, 18]
