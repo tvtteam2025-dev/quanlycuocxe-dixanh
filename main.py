@@ -11414,6 +11414,27 @@ def export_orders_detail_report(tuNgay: str = "", denNgay: str = "") -> Response
     order_ids = {str(row.get("id") or "").strip() for row in orders}
     shared_for_orders = [row for row in shared_rows if str(row.get("donHangId") or "").strip() in order_ids]
     benefits_for_orders = [row for row in benefits if str(row.get("donHangId") or "").strip() in order_ids]
+
+    # Sheet "Khách xe ghép" phải bám đúng ngày đi lưu trên từng hành khách,
+    # không phụ thuộc ngày tạo hoặc việc đơn cha có lọt vào bộ lọc hay không.
+    def shared_report_datetime(row: dict[str, Any]) -> datetime | None:
+        return parse_existing_datetime(row.get("ngayGioDi"))
+
+    shared_report_rows = [
+        row
+        for row in shared_rows
+        if (shared_report_datetime(row) and start_date <= shared_report_datetime(row) <= end_date)
+    ]
+    shared_report_order_ids = {
+        str(row.get("donHangId") or "").strip()
+        for row in shared_report_rows
+        if str(row.get("donHangId") or "").strip()
+    }
+    benefits_for_shared_report = [
+        row
+        for row in benefits
+        if str(row.get("donHangId") or "").strip() in shared_report_order_ids
+    ]
     shared_customer_types_by_order: dict[str, list[str]] = {}
     for shared_row in shared_for_orders:
         order_id = str(shared_row.get("donHangId") or "").strip()
@@ -11617,11 +11638,14 @@ def export_orders_detail_report(tuNgay: str = "", denNgay: str = "") -> Response
     ]
     shared_sheet = setup_sheet("Khach xe ghep", shared_headers, [8, 24, 24, 14, 24, 18, 16, 16, 12, 12, 18, 18, 26, 22, 22, 16, 16, 28, 16, 28, 28, 16, 14, 16, 34])
     write_title(shared_sheet, f"KHÁCH XE GHÉP ({period_label})", len(shared_headers))
-    for index, row in enumerate(shared_for_orders, start=1):
+    for index, row in enumerate(
+        sorted(shared_report_rows, key=lambda item: shared_report_datetime(item) or datetime.min),
+        start=1,
+    ):
         order_id = str(row.get("donHangId") or "").strip()
         passenger_key = normalize_text(row.get("hoTen"))
         row_benefits = [
-            item for item in benefits_for_orders
+            item for item in benefits_for_shared_report
             if str(item.get("donHangId") or "").strip() == order_id
             and (not passenger_key or normalize_text(item.get("tenKhach")) == passenger_key)
         ]
@@ -12814,3 +12838,4 @@ def update_order_remittance_status(
         "ngayXacNhanNopTien": order["ngayXacNhanNopTien"],
         "nguoiXacNhanNopTien": order["nguoiXacNhanNopTien"],
     }
+
