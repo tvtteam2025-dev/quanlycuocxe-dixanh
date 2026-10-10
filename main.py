@@ -13,7 +13,7 @@ import time
 import unicodedata
 import zipfile
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, time as datetime_time, timedelta, timezone
 from io import BytesIO, StringIO
 from pathlib import Path
 from typing import Any
@@ -5721,25 +5721,35 @@ def rounded_payroll_overtime_minutes(raw_value: Any) -> int:
     return (hours + 1) * 60
 
 
-def cargo_overtime_before_lunch_minutes(total_shift_value: Any) -> int:
-    """Return rounded overtime after eight standard hours, before the declared lunch break."""
-    overtime_minutes = max(0, payroll_duration_minutes(total_shift_value) - 8 * 60)
+def payroll_clock_minutes(raw_value: Any) -> int | None:
+    if isinstance(raw_value, datetime):
+        return raw_value.hour * 60 + raw_value.minute + round(raw_value.second / 60)
+    if isinstance(raw_value, datetime_time):
+        return raw_value.hour * 60 + raw_value.minute + round(raw_value.second / 60)
+    text = str(raw_value or "").strip()
+    match = re.fullmatch(r"(\d{1,2}):(\d{2})(?::(\d{2}))?", text)
+    if not match:
+        return None
+    hour, minute, second = int(match.group(1)), int(match.group(2)), int(match.group(3) or 0)
+    if hour > 23 or minute > 59 or second > 59:
+        return None
+    return hour * 60 + minute + round(second / 60)
+
+
+def cargo_shift_minutes(shift_start: Any, shift_end: Any) -> int:
+    start_minutes = payroll_clock_minutes(shift_start)
+    end_minutes = payroll_clock_minutes(shift_end)
+    if start_minutes is None or end_minutes is None:
+        return 0
+    if end_minutes < start_minutes:
+        end_minutes += 24 * 60
+    return max(0, end_minutes - start_minutes)
+
+
+def cargo_overtime_from_clock_minutes(shift_start: Any, shift_end: Any) -> int:
+    """Calculate rounded Cargo overtime from clock times after a nine-hour standard shift."""
+    overtime_minutes = max(0, cargo_shift_minutes(shift_start, shift_end) - 9 * 60)
     hours, minutes = divmod(overtime_minutes, 60)
-    if minutes <= 15:
-        return hours * 60
-    if minutes <= 45:
-        return hours * 60 + 30
-    return (hours + 1) * 60
-
-
-def payable_cargo_overtime_minutes(total_shift_value: Any, lunch_break_hours: Any) -> int:
-    """Calculate paid overtime from total shift, avoiding the roster's pre-deducted overtime field."""
-    try:
-        break_minutes = round(max(0.0, min(24.0, float(lunch_break_hours or 0))) * 60)
-    except (TypeError, ValueError):
-        break_minutes = 0
-    payable_minutes = max(0, payroll_duration_minutes(total_shift_value) - 8 * 60 - break_minutes)
-    hours, minutes = divmod(payable_minutes, 60)
     if minutes <= 15:
         return hours * 60
     if minutes <= 45:
@@ -5979,13 +5989,12 @@ def accounting_payroll_rows(month: str, view_type: str) -> dict[str, Any]:
             for day in range(1, day_count + 1):
                 key = f"{code}:{day}"
                 if (overrides.get(key) or events.get(key) or "KL") == "X":
-                    recorded_overtime_minutes += cargo_overtime_before_lunch_minutes(
-                        (overtime_events.get(key) or {}).get("tongSoGioLam")
+                    overtime_source = overtime_events.get(key) or {}
+                    daily_overtime_minutes = cargo_overtime_from_clock_minutes(
+                        overtime_source.get("gioBatDau"), overtime_source.get("gioKetThuc")
                     )
-                    overtime_minutes += payable_cargo_overtime_minutes(
-                        (overtime_events.get(key) or {}).get("tongSoGioLam"),
-                        lunch_break_hours,
-                    )
+                    recorded_overtime_minutes += daily_overtime_minutes
+                    overtime_minutes += daily_overtime_minutes
         base_salary = round(float(salary.get("baseSalary") or 0))
         total_allowance = sum(item["amount"] for item in allowances)
         overtime_pay = round(overtime_minutes / 60 * 30_000) if view_type == "cargo" else 0
@@ -6217,7 +6226,7 @@ def _payroll_detail_sources(month: str, view_type: str, payroll_rows: list[dict[
             work_date = datetime(year, month_number, day)
             mark = attendance_overrides.get(f"{code}:{day}") or attendance_events.get(f"{code}:{day}") or "KL"
             overtime_source = overtime_events.get(f"{code}:{day}") or {}
-            overtime_minutes = payable_cargo_overtime_minutes(overtime_source.get("tongSoGioLam"), lunch_break_hours) if view_type == "cargo" and mark == "X" else 0
+            overtime_minutes = cargo_overtime_from_clock_minutes(overtime_source.get("gioBatDau"), overtime_source.get("gioKetThuc")) if view_type == "cargo" and mark == "X" else 0
             rows.append({
                 "date": work_date,
                 "weekday": weekday_labels[work_date.weekday()],
@@ -6226,12 +6235,12 @@ def _payroll_detail_sources(month: str, view_type: str, payroll_rows: list[dict[
                 "workDay": 1 if mark == "X" else 0,
                 "holidayBonusEligible": mark == "X" and (view_type != "cargo" or f"{code}:{day}" in holiday_bonus_eligible_keys),
                 "lunchBreakHours": lunch_break_hours,
-                "recordedOvertimeMinutes": cargo_overtime_before_lunch_minutes(overtime_source.get("tongSoGioLam")) if view_type == "cargo" and mark == "X" else 0,
+                "recordedOvertimeMinutes": overtime_minutes,
                 "overtimeMinutes": overtime_minutes,
                 "overtimePay": round(overtime_minutes / 60 * 30_000) if view_type == "cargo" else 0,
                 "shiftStart": str(overtime_source.get("gioBatDau") or "").strip(),
                 "shiftEnd": str(overtime_source.get("gioKetThuc") or "").strip(),
-                "shiftMinutes": payroll_duration_minutes(overtime_source.get("tongSoGioLam")) if overtime_source else 0,
+                "shiftMinutes": cargo_shift_minutes(overtime_source.get("gioBatDau"), overtime_source.get("gioKetThuc")) if overtime_source else 0,
                 "shiftStatus": str(overtime_source.get("trangThaiLenXuongCa") or "").strip(),
                 "source": "Điều chỉnh kế toán" if f"{code}:{day}" in attendance_overrides else "Danh sách lên ca",
             })
@@ -6553,7 +6562,7 @@ def _build_driver_payslip_workbook(
     )
     if is_cargo:
         formula_note += "Thưởng đủ công: Nhân Viên Áp Tải 500.000 VNĐ, các chức vụ Xe Hàng khác 1.000.000 VNĐ. "
-        formula_note += "Giờ tăng ca tính lương mỗi ngày = tối đa(Tổng giờ lên ca - 8 giờ công chuẩn - Giờ nghỉ trưa, 0), sau đó làm tròn theo quy định. "
+        formula_note += "Giờ tăng ca tính lương mỗi ngày = tối đa(Giờ kết thúc - Giờ bắt đầu - 9 giờ công chuẩn, 0), sau đó làm tròn theo quy định; không dùng cột giờ tăng ca từ Danh sách lên ca. "
         formula_note += "Thưởng ngày công tăng ca = ((Lương cơ bản + Phụ cấp) / Công chuẩn) × 1,5 × Số ngày còn phép. "
     formula_note += "Thực nhận = Lương gộp - Tổng khoản trừ." if is_cargo else "Thưởng đủ công khi Công thực tế + Số ngày lễ đã khai báo ≥ Công chuẩn. Thực nhận = Lương cơ bản theo ngày công thường - Tổng khoản trừ + Thưởng đủ công + Thưởng ngày lễ + Thưởng doanh thu 10% + Thưởng tiết kiệm xăng - Thu vượt định mức."
     summary.cell(current_row, 1, formula_note)
@@ -7225,25 +7234,24 @@ def export_accounting_attendance(request: Request, month: str = "", viewType: st
             except ValueError:
                 return str(raw_value)
 
-        def payable_overtime_value(total_shift_value: Any, lunch_break_hours: Any) -> timedelta:
-            return timedelta(minutes=payable_cargo_overtime_minutes(total_shift_value, lunch_break_hours))
-
         output_row = 2
         for code, driver in sorted(drivers.items(), key=lambda item: item[1]["name"]):
             for day in range(1, day_count + 1):
                 source = overtime_events.get(f"{code}:{day}")
                 is_working = bool(source) and "len ca" in normalize_text(source.get("trangThaiLenXuongCa"))
                 lunch_break_hours = lunch_break_by_driver.get(code, 0)
+                shift_minutes = cargo_shift_minutes(source.get("gioBatDau"), source.get("gioKetThuc")) if is_working else 0
+                overtime_minutes = cargo_overtime_from_clock_minutes(source.get("gioBatDau"), source.get("gioKetThuc")) if is_working else 0
                 values = [
                     day,
                     datetime(year, month_number, day),
                     driver["name"],
                     clock_value(source.get("gioBatDau")) if is_working else "OFF",
                     clock_value(source.get("gioKetThuc")) if is_working else "",
-                    duration_value(source.get("tongSoGioLam")) if is_working else "",
-                    timedelta(minutes=cargo_overtime_before_lunch_minutes(source.get("tongSoGioLam"))) if is_working else "",
+                    timedelta(minutes=shift_minutes) if is_working else "",
+                    timedelta(minutes=overtime_minutes) if is_working else "",
                     lunch_break_hours,
-                    payable_overtime_value(source.get("tongSoGioLam"), lunch_break_hours) if is_working else "",
+                    timedelta(minutes=overtime_minutes) if is_working else "",
                 ]
                 for column, value in enumerate(values, start=1):
                     cell = overtime_sheet.cell(output_row, column, value)
