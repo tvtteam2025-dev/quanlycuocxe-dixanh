@@ -5721,6 +5721,17 @@ def rounded_payroll_overtime_minutes(raw_value: Any) -> int:
     return (hours + 1) * 60
 
 
+def cargo_overtime_before_lunch_minutes(total_shift_value: Any) -> int:
+    """Return rounded overtime after eight standard hours, before the declared lunch break."""
+    overtime_minutes = max(0, payroll_duration_minutes(total_shift_value) - 8 * 60)
+    hours, minutes = divmod(overtime_minutes, 60)
+    if minutes <= 15:
+        return hours * 60
+    if minutes <= 45:
+        return hours * 60 + 30
+    return (hours + 1) * 60
+
+
 def payable_cargo_overtime_minutes(total_shift_value: Any, lunch_break_hours: Any) -> int:
     """Calculate paid overtime from total shift, avoiding the roster's pre-deducted overtime field."""
     try:
@@ -5962,11 +5973,15 @@ def accounting_payroll_rows(month: str, view_type: str) -> dict[str, Any]:
             allowances = merge_allowances([{"type": salary.get("allowanceType") or "Khác", "amount": salary.get("allowance") or 0}])
         lunch_break_hours = max(0.0, min(24.0, float(salary.get("lunchBreakHours") or 0)))
         work_days = sum(1 for day in range(1, day_count + 1) if (overrides.get(f"{code}:{day}") or events.get(f"{code}:{day}") or "KL") == "X")
+        recorded_overtime_minutes = 0
         overtime_minutes = 0
         if view_type == "cargo":
             for day in range(1, day_count + 1):
                 key = f"{code}:{day}"
                 if (overrides.get(key) or events.get(key) or "KL") == "X":
+                    recorded_overtime_minutes += cargo_overtime_before_lunch_minutes(
+                        (overtime_events.get(key) or {}).get("tongSoGioLam")
+                    )
                     overtime_minutes += payable_cargo_overtime_minutes(
                         (overtime_events.get(key) or {}).get("tongSoGioLam"),
                         lunch_break_hours,
@@ -6024,7 +6039,7 @@ def accounting_payroll_rows(month: str, view_type: str) -> dict[str, Any]:
         payroll_note = str((payroll_notes.get(code) or {}).get("note") or "").strip()
         if not payroll_note:
             payroll_note = next((str(item.get("note") or "").strip() for item in deductions if normalize_text(item.get("type")) == "khac" and str(item.get("note") or "").strip()), "")
-        output_rows.append({**driver, "position": position, "requiredDays": required_days, "workDays": work_days, "attendanceCreditedDays": attendance_credited_days, "baseSalary": base_salary, "allowances": allowances, "totalAllowance": total_allowance, "regularWorkdaySalary": regular_workday_salary, "lunchBreakHours": lunch_break_hours, "overtimeMinutes": overtime_minutes, "overtimePay": overtime_pay, "remainingLeaveDays": remaining_leave_days, "extraWorkdayBonus": extra_workday_bonus, "attendanceBonusRate": attendance_bonus_rate_value, "attendanceBonus": attendance_bonus, "holidayWorkDays": holiday_work_days, "holidayBonusPerDay": holiday_bonus_per_day, "holidayBonus": holiday_bonus, "holidayDates": [item["date"] for item in holiday_details], "holidayDetails": holiday_details, "travelRevenue": travel_revenue, "travelRevenueBonus": travel_revenue_bonus, "fuelSavingBonus": fuel_saving_bonus, "fuelOveruseCharge": fuel_overuse_charge, "deductions": deductions, "totalDeduction": total_deduction, "grossSalary": gross_salary, "totalSalary": net_salary, "bankName": str(salary.get("bankName") or ""), "accountNumber": str(salary.get("accountNumber") or ""), "accountHolder": str(salary.get("accountHolder") or ""), "salaryEffectiveMonth": str(salary.get("effectiveMonth") or ""), "salaryDeclared": bool(salary), "payrollNote": payroll_note})
+        output_rows.append({**driver, "position": position, "requiredDays": required_days, "workDays": work_days, "attendanceCreditedDays": attendance_credited_days, "baseSalary": base_salary, "allowances": allowances, "totalAllowance": total_allowance, "regularWorkdaySalary": regular_workday_salary, "lunchBreakHours": lunch_break_hours, "recordedOvertimeMinutes": recorded_overtime_minutes, "overtimeMinutes": overtime_minutes, "overtimePay": overtime_pay, "remainingLeaveDays": remaining_leave_days, "extraWorkdayBonus": extra_workday_bonus, "attendanceBonusRate": attendance_bonus_rate_value, "attendanceBonus": attendance_bonus, "holidayWorkDays": holiday_work_days, "holidayBonusPerDay": holiday_bonus_per_day, "holidayBonus": holiday_bonus, "holidayDates": [item["date"] for item in holiday_details], "holidayDetails": holiday_details, "travelRevenue": travel_revenue, "travelRevenueBonus": travel_revenue_bonus, "fuelSavingBonus": fuel_saving_bonus, "fuelOveruseCharge": fuel_overuse_charge, "deductions": deductions, "totalDeduction": total_deduction, "grossSalary": gross_salary, "totalSalary": net_salary, "bankName": str(salary.get("bankName") or ""), "accountNumber": str(salary.get("accountNumber") or ""), "accountHolder": str(salary.get("accountHolder") or ""), "salaryEffectiveMonth": str(salary.get("effectiveMonth") or ""), "salaryDeclared": bool(salary), "payrollNote": payroll_note})
     deduction_types = order_deduction_types([str(item.get("type") or "Khoản trừ").strip() or "Khoản trừ" for row in output_rows for item in (row.get("deductions") or [])])
     return {"month": month, "viewType": view_type, "dayCount": day_count, "requiredDays": required_days, "bonusAmount": bonus_amount, "holidays": list(holidays_by_date.values()), "holidayBonusTotal": sum(row.get("holidayBonus", 0) for row in output_rows), "extraWorkdayBonusTotal": sum(row.get("extraWorkdayBonus", 0) for row in output_rows), "travelRevenueTotal": sum(row.get("travelRevenue", 0) for row in output_rows), "travelRevenueBonusRate": round(TRAVEL_REVENUE_BONUS_RATE * 100) if view_type == "travel" else 0, "travelRevenueBonusTotal": sum(row.get("travelRevenueBonus", 0) for row in output_rows), "fuelSavingBonusTotal": sum(row.get("fuelSavingBonus", 0) for row in output_rows), "fuelOveruseChargeTotal": sum(row.get("fuelOveruseCharge", 0) for row in output_rows), "deductionTotal": sum(row.get("totalDeduction", 0) for row in output_rows), "deductionTypes": deduction_types, "overtimeRate": 30_000 if view_type == "cargo" else 0, "rows": output_rows, "locked": False, "lockedBy": "", "lockedAt": "", "fetchedAt": now_iso()}
 
@@ -6211,6 +6226,7 @@ def _payroll_detail_sources(month: str, view_type: str, payroll_rows: list[dict[
                 "workDay": 1 if mark == "X" else 0,
                 "holidayBonusEligible": mark == "X" and (view_type != "cargo" or f"{code}:{day}" in holiday_bonus_eligible_keys),
                 "lunchBreakHours": lunch_break_hours,
+                "recordedOvertimeMinutes": cargo_overtime_before_lunch_minutes(overtime_source.get("tongSoGioLam")) if view_type == "cargo" and mark == "X" else 0,
                 "overtimeMinutes": overtime_minutes,
                 "overtimePay": round(overtime_minutes / 60 * 30_000) if view_type == "cargo" else 0,
                 "shiftStart": str(overtime_source.get("gioBatDau") or "").strip(),
@@ -6572,8 +6588,8 @@ def _build_driver_payslip_workbook(
     attendance_headers = ["STT", "Ngày", "Thứ", "Dấu công", "Diễn giải", "Công tính lương"]
     attendance_widths = [7, 14, 13, 12, 22, 18]
     if is_cargo:
-        attendance_headers += ["Giờ bắt đầu", "Giờ kết thúc", "Giờ nghỉ trưa/ngày", "Giờ tăng ca tính lương", "Tiền tăng ca"]
-        attendance_widths += [14, 14, 18, 19, 17]
+        attendance_headers += ["Giờ bắt đầu", "Giờ kết thúc", "Số giờ tăng ca", "Giờ nghỉ trưa/ngày", "Giờ tăng ca tính lương", "Tiền tăng ca"]
+        attendance_widths += [14, 14, 17, 18, 19, 17]
     attendance_headers += ["Ngày lễ", "Thưởng ngày lễ", "Nguồn"]
     attendance_widths += [24, 18, 22]
     _style_payslip_detail_sheet(attendance, f"CHẤM CÔNG · {name}", period_label, attendance_headers, attendance_widths)
@@ -6586,16 +6602,17 @@ def _build_driver_payslip_workbook(
         display_status = f"Lên ca ngày lễ: {holiday_name}" if is_holiday_bonus_eligible else (f"Xuống ca ngày lễ: {holiday_name} (tính công, không thưởng)" if is_cargo and is_holiday_workday else item["status"])
         values = [index, item["date"], item["weekday"], display_mark, display_status, item["workDay"]]
         if is_cargo:
-            values += [item.get("shiftStart") or "", item.get("shiftEnd") or "", item.get("lunchBreakHours", 0), item["overtimeMinutes"] / 1440, item["overtimePay"]]
+            values += [item.get("shiftStart") or "", item.get("shiftEnd") or "", item.get("recordedOvertimeMinutes", 0) / 1440, item.get("lunchBreakHours", 0), item["overtimeMinutes"] / 1440, item["overtimePay"]]
         values += [holiday_name, holiday_bonus_per_day if is_holiday_bonus_eligible else 0, item["source"]]
         for column, value in enumerate(values, 1):
             attendance.cell(index + 4, column, value)
         attendance.cell(index + 4, 2).number_format = "dd/mm/yyyy"
         attendance.cell(index + 4, len(attendance_headers) - 1).number_format = money_format
         if is_cargo:
-            attendance.cell(index + 4, 9).number_format = "General"
-            attendance.cell(index + 4, 10).number_format = "[h]:mm"
-            attendance.cell(index + 4, 11).number_format = money_format
+            attendance.cell(index + 4, 9).number_format = "[h]:mm"
+            attendance.cell(index + 4, 10).number_format = "General"
+            attendance.cell(index + 4, 11).number_format = "[h]:mm"
+            attendance.cell(index + 4, 12).number_format = money_format
     _finish_payslip_detail_sheet(attendance, len(attendance_rows), len(attendance_headers))
     _append_payslip_total_row(
         attendance,
@@ -6610,10 +6627,12 @@ def _build_driver_payslip_workbook(
     if is_cargo:
         total_row = 5 + len(attendance_rows)
         if attendance_rows:
-            attendance.cell(total_row, 10, sum(item["overtimeMinutes"] for item in attendance_rows) / 1440)
-            attendance.cell(total_row, 10).number_format = "[h]:mm"
-            attendance.cell(total_row, 11, sum(item["overtimePay"] for item in attendance_rows))
-            attendance.cell(total_row, 11).number_format = money_format
+            attendance.cell(total_row, 9, sum(item.get("recordedOvertimeMinutes", 0) for item in attendance_rows) / 1440)
+            attendance.cell(total_row, 9).number_format = "[h]:mm"
+            attendance.cell(total_row, 11, sum(item["overtimeMinutes"] for item in attendance_rows) / 1440)
+            attendance.cell(total_row, 11).number_format = "[h]:mm"
+            attendance.cell(total_row, 12, sum(item["overtimePay"] for item in attendance_rows))
+            attendance.cell(total_row, 12).number_format = money_format
 
         overtime = workbook.create_sheet("Chi tiết tăng ca")
         overtime_headers = [
@@ -6624,6 +6643,7 @@ def _build_driver_payslip_workbook(
             "Giờ bắt đầu",
             "Giờ kết thúc",
             "Tổng giờ lên ca",
+            "Số giờ tăng ca",
             "Giờ nghỉ trưa/ngày",
             "Giờ tăng ca tính lương",
             "Đơn giá tăng ca",
@@ -6635,7 +6655,7 @@ def _build_driver_payslip_workbook(
             f"CHI TIẾT GIỜ TĂNG CA THEO NGÀY · {name}",
             f"{period_label} · Chỉ tính giờ từ bản ghi Lên ca",
             overtime_headers,
-            [7, 14, 13, 18, 14, 14, 18, 18, 19, 18, 18, 22],
+            [7, 14, 13, 18, 14, 14, 18, 17, 18, 19, 18, 18, 22],
         )
         for index, item in enumerate(attendance_rows, 1):
             has_shift = bool(item.get("shiftStatus"))
@@ -6647,6 +6667,7 @@ def _build_driver_payslip_workbook(
                 item.get("shiftStart") if has_shift else "",
                 item.get("shiftEnd") if has_shift else "",
                 item.get("shiftMinutes", 0) / 1440 if has_shift else "",
+                item.get("recordedOvertimeMinutes", 0) / 1440,
                 item.get("lunchBreakHours", 0),
                 item.get("overtimeMinutes", 0) / 1440,
                 30_000 if item.get("overtimeMinutes", 0) else 0,
@@ -6657,10 +6678,11 @@ def _build_driver_payslip_workbook(
                 overtime.cell(index + 4, column, value)
             overtime.cell(index + 4, 2).number_format = "dd/mm/yyyy"
             overtime.cell(index + 4, 7).number_format = "[h]:mm"
-            overtime.cell(index + 4, 8).number_format = "General"
-            overtime.cell(index + 4, 9).number_format = "[h]:mm"
-            overtime.cell(index + 4, 10).number_format = money_format
+            overtime.cell(index + 4, 8).number_format = "[h]:mm"
+            overtime.cell(index + 4, 9).number_format = "General"
+            overtime.cell(index + 4, 10).number_format = "[h]:mm"
             overtime.cell(index + 4, 11).number_format = money_format
+            overtime.cell(index + 4, 12).number_format = money_format
         _finish_payslip_detail_sheet(overtime, len(attendance_rows), len(overtime_headers))
         _append_payslip_total_row(
             overtime,
@@ -6670,10 +6692,11 @@ def _build_driver_payslip_workbook(
             6,
             {
                 7: sum(item.get("shiftMinutes", 0) for item in attendance_rows) / 1440,
-                9: sum(item.get("overtimeMinutes", 0) for item in attendance_rows) / 1440,
-                11: sum(item.get("overtimePay", 0) for item in attendance_rows),
+                8: sum(item.get("recordedOvertimeMinutes", 0) for item in attendance_rows) / 1440,
+                10: sum(item.get("overtimeMinutes", 0) for item in attendance_rows) / 1440,
+                12: sum(item.get("overtimePay", 0) for item in attendance_rows),
             },
-            {7: "[h]:mm", 9: "[h]:mm", 11: money_format},
+            {7: "[h]:mm", 8: "[h]:mm", 10: "[h]:mm", 12: money_format},
         )
         output = BytesIO()
         workbook.save(output)
@@ -6890,7 +6913,7 @@ def export_accounting_payroll(request: Request, month: str = "", viewType: str =
     if viewType == "travel":
         headers += ["Lương cơ bản theo ngày công thường"]
     else:
-        headers += ["Giờ nghỉ trưa/ngày"]
+        headers += ["Số giờ tăng ca", "Giờ nghỉ trưa/ngày"]
     headers += [*deduction_types, "Tổng khoản trừ"]
     if viewType == "cargo":
         headers += ["Giờ tăng ca tính lương", "Tiền tăng ca", "Số ngày còn phép trong tháng", "Tiền thưởng ngày công tăng ca"]
@@ -6930,7 +6953,7 @@ def export_accounting_payroll(request: Request, month: str = "", viewType: str =
             regular_workday_salary = round(float(row.get("regularWorkdaySalary") or 0))
             values += [regular_workday_salary]
         else:
-            values += [row.get("lunchBreakHours", 0)]
+            values += [row.get("recordedOvertimeMinutes", 0) / 1440, row.get("lunchBreakHours", 0)]
         values += [deduction_by_type.get(deduction_type, 0) for deduction_type in deduction_types]
         values += [row.get("totalDeduction", 0)]
         deduction_notes = []
@@ -6974,7 +6997,7 @@ def export_accounting_payroll(request: Request, month: str = "", viewType: str =
             if header := headers[column - 1]:
                 if header in {"Lương cơ bản", "Tổng phụ cấp", "Lương cơ bản theo ngày công thường", "Tổng khoản trừ", "Tiền tăng ca", "Tiền thưởng ngày công tăng ca", "Thưởng đủ công", "Thưởng ngày lễ", "Doanh thu tháng", "Thưởng doanh thu 10%", "Thưởng tiết kiệm xăng", "Thu vượt định mức", "Tổng lương"} or header in allowance_types or header in deduction_types:
                     cell.number_format = '#,##0'
-                elif header == "Giờ tăng ca tính lương":
+                elif header in {"Số giờ tăng ca", "Giờ tăng ca tính lương"}:
                     cell.number_format = '[h]:mm'
                 elif header == "Giờ nghỉ trưa/ngày":
                     cell.number_format = 'General'
@@ -6983,7 +7006,7 @@ def export_accounting_payroll(request: Request, month: str = "", viewType: str =
     if viewType == "travel":
         widths += [24]
     else:
-        widths += [18]
+        widths += [17, 18]
     widths += [20] * len(deduction_types) + [16]
     widths += [14, 16, 22, 24] if viewType == "cargo" else []
     widths += [18, 16, 18]
@@ -7171,7 +7194,7 @@ def export_accounting_attendance(request: Request, month: str = "", viewType: st
         overtime_sheet.page_setup.orientation = "landscape"
         overtime_sheet.page_setup.fitToWidth = 1
         overtime_sheet.sheet_properties.pageSetUpPr.fitToPage = True
-        overtime_headers = ["STT", "Ngày", "Họ Và Tên Áp Tải", "Giờ bắt đầu", "Giờ kết thúc", "Tổng giờ lên ca", "Giờ nghỉ trưa/ngày", "Giờ tăng ca tính lương"]
+        overtime_headers = ["STT", "Ngày", "Họ Và Tên Áp Tải", "Giờ bắt đầu", "Giờ kết thúc", "Tổng giờ lên ca", "Số giờ tăng ca", "Giờ nghỉ trưa/ngày", "Giờ tăng ca tính lương"]
         overtime_header_fill = PatternFill("solid", fgColor="A9DDE2")
         black_side = Side(style="thin", color="000000")
         black_border = Border(left=black_side, right=black_side, top=black_side, bottom=black_side)
@@ -7218,6 +7241,7 @@ def export_accounting_attendance(request: Request, month: str = "", viewType: st
                     clock_value(source.get("gioBatDau")) if is_working else "OFF",
                     clock_value(source.get("gioKetThuc")) if is_working else "",
                     duration_value(source.get("tongSoGioLam")) if is_working else "",
+                    timedelta(minutes=cargo_overtime_before_lunch_minutes(source.get("tongSoGioLam"))) if is_working else "",
                     lunch_break_hours,
                     payable_overtime_value(source.get("tongSoGioLam"), lunch_break_hours) if is_working else "",
                 ]
@@ -7229,9 +7253,9 @@ def export_accounting_attendance(request: Request, month: str = "", viewType: st
                         cell.number_format = "dd/mm/yyyy"
                     elif column in {4, 5} and value != "OFF":
                         cell.number_format = "h:mm"
-                    elif column == 7:
+                    elif column == 8:
                         cell.number_format = "General"
-                    elif column in {6, 8} and value != "":
+                    elif column in {6, 7, 9} and value != "":
                         cell.number_format = "[h]:mm"
                 output_row += 1
         overtime_sheet.column_dimensions["A"].width = 7
@@ -7240,9 +7264,10 @@ def export_accounting_attendance(request: Request, month: str = "", viewType: st
         overtime_sheet.column_dimensions["D"].width = 15
         overtime_sheet.column_dimensions["E"].width = 15
         overtime_sheet.column_dimensions["F"].width = 18
-        overtime_sheet.column_dimensions["G"].width = 18
-        overtime_sheet.column_dimensions["H"].width = 20
-        overtime_sheet.auto_filter.ref = f"A1:H{max(1, output_row - 1)}"
+        overtime_sheet.column_dimensions["G"].width = 17
+        overtime_sheet.column_dimensions["H"].width = 18
+        overtime_sheet.column_dimensions["I"].width = 20
+        overtime_sheet.auto_filter.ref = f"A1:I{max(1, output_row - 1)}"
         overtime_sheet.print_title_rows = "1:1"
 
     output = BytesIO()
