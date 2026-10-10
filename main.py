@@ -5961,7 +5961,6 @@ def accounting_payroll_rows(month: str, view_type: str) -> dict[str, Any]:
         ) if view_type == "cargo" else (0, 0)
         position = staff_positions.get(code, "")
         attendance_bonus_rate_value = attendance_bonus_rate(view_type, position)
-        attendance_bonus = attendance_bonus_rate_value if work_days >= required_days else 0
         holiday_details = []
         for holiday_date, holiday in holidays_by_date.items():
             holiday_day = int(holiday_date[-2:])
@@ -5977,6 +5976,8 @@ def accounting_payroll_rows(month: str, view_type: str) -> dict[str, Any]:
         )
         holiday_work_days = len(holiday_details)
         holiday_bonus = holiday_bonus_per_day * holiday_work_days
+        attendance_credited_days = work_days + (len(holidays_by_date) if view_type == "travel" else 0)
+        attendance_bonus = attendance_bonus_rate_value if attendance_credited_days >= required_days else 0
         fuel = fuel_by_driver.get(code, {})
         fuel_saving_bonus = int(fuel.get("savingBonus") or 0)
         fuel_overuse_charge = int(fuel.get("overuseCharge") or 0)
@@ -5984,7 +5985,16 @@ def accounting_payroll_rows(month: str, view_type: str) -> dict[str, Any]:
         travel_revenue_bonus = round(travel_revenue * TRAVEL_REVENUE_BONUS_RATE) if view_type == "travel" else 0
         deductions = deductions_by_driver.get(code, [])
         total_deduction = sum(item["amount"] for item in deductions)
-        gross_salary = base_salary + total_allowance + overtime_pay + extra_workday_bonus + attendance_bonus + holiday_bonus + travel_revenue_bonus
+        regular_workday_salary = (
+            round((base_salary + total_allowance) / required_days * work_days)
+            if required_days > 0
+            else 0
+        )
+        gross_salary = (
+            regular_workday_salary + holiday_bonus + travel_revenue_bonus
+            if view_type == "travel"
+            else base_salary + total_allowance + overtime_pay + extra_workday_bonus + attendance_bonus + holiday_bonus
+        )
         # Fuel overuse is a separate charge collected from the driver, so it
         # reduces the amount actually paid without being merged into the
         # user-managed deduction columns. Fuel saving remains a separate bonus
@@ -5993,7 +6003,7 @@ def accounting_payroll_rows(month: str, view_type: str) -> dict[str, Any]:
         payroll_note = str((payroll_notes.get(code) or {}).get("note") or "").strip()
         if not payroll_note:
             payroll_note = next((str(item.get("note") or "").strip() for item in deductions if normalize_text(item.get("type")) == "khac" and str(item.get("note") or "").strip()), "")
-        output_rows.append({**driver, "position": position, "requiredDays": required_days, "workDays": work_days, "baseSalary": base_salary, "allowances": allowances, "totalAllowance": total_allowance, "overtimeMinutes": overtime_minutes, "overtimePay": overtime_pay, "remainingLeaveDays": remaining_leave_days, "extraWorkdayBonus": extra_workday_bonus, "attendanceBonusRate": attendance_bonus_rate_value, "attendanceBonus": attendance_bonus, "holidayWorkDays": holiday_work_days, "holidayBonusPerDay": holiday_bonus_per_day, "holidayBonus": holiday_bonus, "holidayDates": [item["date"] for item in holiday_details], "holidayDetails": holiday_details, "travelRevenue": travel_revenue, "travelRevenueBonus": travel_revenue_bonus, "fuelSavingBonus": fuel_saving_bonus, "fuelOveruseCharge": fuel_overuse_charge, "deductions": deductions, "totalDeduction": total_deduction, "grossSalary": gross_salary, "totalSalary": net_salary, "bankName": str(salary.get("bankName") or ""), "accountNumber": str(salary.get("accountNumber") or ""), "accountHolder": str(salary.get("accountHolder") or ""), "salaryEffectiveMonth": str(salary.get("effectiveMonth") or ""), "salaryDeclared": bool(salary), "payrollNote": payroll_note})
+        output_rows.append({**driver, "position": position, "requiredDays": required_days, "workDays": work_days, "attendanceCreditedDays": attendance_credited_days, "baseSalary": base_salary, "allowances": allowances, "totalAllowance": total_allowance, "regularWorkdaySalary": regular_workday_salary, "overtimeMinutes": overtime_minutes, "overtimePay": overtime_pay, "remainingLeaveDays": remaining_leave_days, "extraWorkdayBonus": extra_workday_bonus, "attendanceBonusRate": attendance_bonus_rate_value, "attendanceBonus": attendance_bonus, "holidayWorkDays": holiday_work_days, "holidayBonusPerDay": holiday_bonus_per_day, "holidayBonus": holiday_bonus, "holidayDates": [item["date"] for item in holiday_details], "holidayDetails": holiday_details, "travelRevenue": travel_revenue, "travelRevenueBonus": travel_revenue_bonus, "fuelSavingBonus": fuel_saving_bonus, "fuelOveruseCharge": fuel_overuse_charge, "deductions": deductions, "totalDeduction": total_deduction, "grossSalary": gross_salary, "totalSalary": net_salary, "bankName": str(salary.get("bankName") or ""), "accountNumber": str(salary.get("accountNumber") or ""), "accountHolder": str(salary.get("accountHolder") or ""), "salaryEffectiveMonth": str(salary.get("effectiveMonth") or ""), "salaryDeclared": bool(salary), "payrollNote": payroll_note})
     deduction_types = order_deduction_types([str(item.get("type") or "Khoản trừ").strip() or "Khoản trừ" for row in output_rows for item in (row.get("deductions") or [])])
     return {"month": month, "viewType": view_type, "dayCount": day_count, "requiredDays": required_days, "bonusAmount": bonus_amount, "holidays": list(holidays_by_date.values()), "holidayBonusTotal": sum(row.get("holidayBonus", 0) for row in output_rows), "extraWorkdayBonusTotal": sum(row.get("extraWorkdayBonus", 0) for row in output_rows), "travelRevenueTotal": sum(row.get("travelRevenue", 0) for row in output_rows), "travelRevenueBonusRate": round(TRAVEL_REVENUE_BONUS_RATE * 100) if view_type == "travel" else 0, "travelRevenueBonusTotal": sum(row.get("travelRevenueBonus", 0) for row in output_rows), "fuelSavingBonusTotal": sum(row.get("fuelSavingBonus", 0) for row in output_rows), "fuelOveruseChargeTotal": sum(row.get("fuelOveruseCharge", 0) for row in output_rows), "deductionTotal": sum(row.get("totalDeduction", 0) for row in output_rows), "deductionTypes": deduction_types, "overtimeRate": 30_000 if view_type == "cargo" else 0, "rows": output_rows, "locked": False, "lockedBy": "", "lockedAt": "", "fetchedAt": now_iso()}
 
@@ -6453,6 +6463,8 @@ def _build_driver_payslip_workbook(
     for allowance in merge_allowances(driver.get("allowances") or []):
         metric(f"Phụ cấp: {str(allowance.get('type') or 'Khác')}", allowance.get("amount", 0))
     metric("Tổng phụ cấp", driver.get("totalAllowance", 0))
+    if not is_cargo:
+        metric("Lương cơ bản theo ngày công thường", driver.get("regularWorkdaySalary", 0))
     if is_cargo:
         metric("Giờ tăng ca", round(float(driver.get("overtimeMinutes") or 0) / 60, 2), "giờ")
         metric("Tiền tăng ca", driver.get("overtimePay", 0))
@@ -6487,11 +6499,15 @@ def _build_driver_payslip_workbook(
 
     current_row += 1
     summary.merge_cells(start_row=current_row, start_column=1, end_row=current_row, end_column=4)
-    formula_note = "Lương gộp đã gồm thưởng ngày lễ = (Lương cơ bản / Công chuẩn) × 3 × Số ngày lễ đi làm. "
+    formula_note = (
+        "Thưởng ngày lễ = (Lương cơ bản / Công chuẩn) × 3 × Số ngày lễ đi làm. "
+        if is_cargo
+        else "Thưởng ngày lễ = ((Lương cơ bản + Tổng phụ cấp) / Công chuẩn) × 3 × Số ngày lễ đi làm. "
+    )
     if is_cargo:
         formula_note += "Thưởng đủ công: Nhân Viên Áp Tải 500.000 VNĐ, các chức vụ Xe Hàng khác 1.000.000 VNĐ. "
         formula_note += "Thưởng ngày công tăng ca = ((Lương cơ bản + Phụ cấp) / Công chuẩn) × 1,5 × Số ngày còn phép. "
-    formula_note += "Thực nhận = Lương gộp - Tổng khoản trừ." if is_cargo else "Thực nhận = Lương gộp - Tổng khoản trừ - Thu vượt định mức + Thưởng tiết kiệm xăng."
+    formula_note += "Thực nhận = Lương gộp - Tổng khoản trừ." if is_cargo else "Thưởng đủ công khi Công thực tế + Số ngày lễ đã khai báo ≥ Công chuẩn. Thực nhận = Lương cơ bản theo ngày công thường - Tổng khoản trừ + Thưởng ngày lễ + Thưởng doanh thu 10% + Thưởng tiết kiệm xăng - Thu vượt định mức."
     summary.cell(current_row, 1, formula_note)
     summary.cell(current_row, 1).font = Font(name="Arial", size=10, italic=True, color=muted)
     summary.cell(current_row, 1).alignment = Alignment(wrap_text=True)
@@ -6873,17 +6889,7 @@ def export_accounting_payroll(request: Request, month: str = "", viewType: str =
             deduction_by_type[deduction_type] = deduction_by_type.get(deduction_type, 0) + round(float(item.get("amount") or 0))
         values += [row["totalAllowance"]]
         if viewType == "travel":
-            required_days = float(row.get("requiredDays") or 0)
-            work_days = float(row.get("workDays") or 0)
-            regular_workday_salary = (
-                round(
-                    (float(row.get("baseSalary") or 0) + float(row.get("totalAllowance") or 0))
-                    / required_days
-                    * work_days
-                )
-                if required_days > 0
-                else 0
-            )
+            regular_workday_salary = round(float(row.get("regularWorkdaySalary") or 0))
             values += [regular_workday_salary]
         values += [deduction_by_type.get(deduction_type, 0) for deduction_type in deduction_types]
         values += [row.get("totalDeduction", 0)]
