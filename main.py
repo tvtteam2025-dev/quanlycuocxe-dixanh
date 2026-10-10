@@ -5991,7 +5991,7 @@ def accounting_payroll_rows(month: str, view_type: str) -> dict[str, Any]:
             else 0
         )
         gross_salary = (
-            regular_workday_salary + holiday_bonus + travel_revenue_bonus
+            regular_workday_salary + attendance_bonus + holiday_bonus + travel_revenue_bonus
             if view_type == "travel"
             else base_salary + total_allowance + overtime_pay + extra_workday_bonus + attendance_bonus + holiday_bonus
         )
@@ -6507,7 +6507,7 @@ def _build_driver_payslip_workbook(
     if is_cargo:
         formula_note += "Thưởng đủ công: Nhân Viên Áp Tải 500.000 VNĐ, các chức vụ Xe Hàng khác 1.000.000 VNĐ. "
         formula_note += "Thưởng ngày công tăng ca = ((Lương cơ bản + Phụ cấp) / Công chuẩn) × 1,5 × Số ngày còn phép. "
-    formula_note += "Thực nhận = Lương gộp - Tổng khoản trừ." if is_cargo else "Thưởng đủ công khi Công thực tế + Số ngày lễ đã khai báo ≥ Công chuẩn. Thực nhận = Lương cơ bản theo ngày công thường - Tổng khoản trừ + Thưởng ngày lễ + Thưởng doanh thu 10% + Thưởng tiết kiệm xăng - Thu vượt định mức."
+    formula_note += "Thực nhận = Lương gộp - Tổng khoản trừ." if is_cargo else "Thưởng đủ công khi Công thực tế + Số ngày lễ đã khai báo ≥ Công chuẩn. Thực nhận = Lương cơ bản theo ngày công thường - Tổng khoản trừ + Thưởng đủ công + Thưởng ngày lễ + Thưởng doanh thu 10% + Thưởng tiết kiệm xăng - Thu vượt định mức."
     summary.cell(current_row, 1, formula_note)
     summary.cell(current_row, 1).font = Font(name="Arial", size=10, italic=True, color=muted)
     summary.cell(current_row, 1).alignment = Alignment(wrap_text=True)
