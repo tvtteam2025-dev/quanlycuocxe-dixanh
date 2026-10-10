@@ -6887,7 +6887,7 @@ def export_accounting_payroll(request: Request, month: str = "", viewType: str =
         headers += ["Giờ nghỉ trưa/ngày"]
     headers += [*deduction_types, "Tổng khoản trừ"]
     if viewType == "cargo":
-        headers += ["Giờ tăng ca", "Tiền tăng ca", "Số ngày còn phép trong tháng", "Tiền thưởng ngày công tăng ca"]
+        headers += ["Giờ tăng ca tính lương", "Tiền tăng ca", "Số ngày còn phép trong tháng", "Tiền thưởng ngày công tăng ca"]
     if viewType == "travel":
         headers += ["Thưởng đủ công", "Ngày lễ đi làm", "Thưởng ngày lễ", "Doanh thu tháng", "Thưởng doanh thu 10%", "Thưởng tiết kiệm xăng", "Thu vượt định mức", "Tổng lương", "Ngân hàng", "Số tài khoản", "Chủ tài khoản", "Ghi chú"]
     else:
@@ -6968,7 +6968,7 @@ def export_accounting_payroll(request: Request, month: str = "", viewType: str =
             if header := headers[column - 1]:
                 if header in {"Lương cơ bản", "Tổng phụ cấp", "Lương cơ bản theo ngày công thường", "Tổng khoản trừ", "Tiền tăng ca", "Tiền thưởng ngày công tăng ca", "Thưởng đủ công", "Thưởng ngày lễ", "Doanh thu tháng", "Thưởng doanh thu 10%", "Thưởng tiết kiệm xăng", "Thu vượt định mức", "Tổng lương"} or header in allowance_types or header in deduction_types:
                     cell.number_format = '#,##0'
-                elif header == "Giờ tăng ca":
+                elif header == "Giờ tăng ca tính lương":
                     cell.number_format = '[h]:mm'
                 elif header == "Giờ nghỉ trưa/ngày":
                     cell.number_format = '0.##'
