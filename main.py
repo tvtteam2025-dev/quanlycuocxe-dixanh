@@ -6834,7 +6834,10 @@ def export_accounting_payroll(request: Request, month: str = "", viewType: str =
             if deduction_type not in deduction_types:
                 deduction_types.append(deduction_type)
     deduction_types = order_deduction_types(deduction_types)
-    headers = ["STT", "Mã NV", "Họ và tên", "Công chuẩn", "Công thực tế", "Lương cơ bản", *allowance_types, "Tổng phụ cấp", *deduction_types, "Tổng khoản trừ"]
+    headers = ["STT", "Mã NV", "Họ và tên", "Công chuẩn", "Công thực tế", "Lương cơ bản", *allowance_types, "Tổng phụ cấp"]
+    if viewType == "travel":
+        headers += ["Lương cơ bản theo ngày công thường"]
+    headers += [*deduction_types, "Tổng khoản trừ"]
     if viewType == "cargo":
         headers += ["Giờ tăng ca", "Tiền tăng ca", "Số ngày còn phép trong tháng", "Tiền thưởng ngày công tăng ca"]
     if viewType == "travel":
@@ -6869,6 +6872,14 @@ def export_accounting_payroll(request: Request, month: str = "", viewType: str =
             deduction_type = str(item.get("type") or "Khoản trừ").strip() or "Khoản trừ"
             deduction_by_type[deduction_type] = deduction_by_type.get(deduction_type, 0) + round(float(item.get("amount") or 0))
         values += [row["totalAllowance"]]
+        if viewType == "travel":
+            work_days = float(row.get("workDays") or 0)
+            regular_workday_salary = (
+                round((float(row.get("baseSalary") or 0) + float(row.get("totalAllowance") or 0)) / work_days)
+                if work_days > 0
+                else 0
+            )
+            values += [regular_workday_salary]
         values += [deduction_by_type.get(deduction_type, 0) for deduction_type in deduction_types]
         values += [row.get("totalDeduction", 0)]
         deduction_notes = []
@@ -6910,12 +6921,15 @@ def export_accounting_payroll(request: Request, month: str = "", viewType: str =
             cell.border = border
             cell.alignment = Alignment(vertical="center", wrap_text=True)
             if header := headers[column - 1]:
-                if header in {"Lương cơ bản", "Tổng phụ cấp", "Tổng khoản trừ", "Tiền tăng ca", "Tiền thưởng ngày công tăng ca", "Thưởng đủ công", "Thưởng ngày lễ", "Doanh thu tháng", "Thưởng doanh thu 10%", "Thưởng tiết kiệm xăng", "Thu vượt định mức", "Tổng lương"} or header in allowance_types or header in deduction_types:
+                if header in {"Lương cơ bản", "Tổng phụ cấp", "Lương cơ bản theo ngày công thường", "Tổng khoản trừ", "Tiền tăng ca", "Tiền thưởng ngày công tăng ca", "Thưởng đủ công", "Thưởng ngày lễ", "Doanh thu tháng", "Thưởng doanh thu 10%", "Thưởng tiết kiệm xăng", "Thu vượt định mức", "Tổng lương"} or header in allowance_types or header in deduction_types:
                     cell.number_format = '#,##0'
                 elif header == "Giờ tăng ca":
                     cell.number_format = '[h]:mm'
         sheet.row_dimensions[index + 3].height = 24
-    widths = [6, 12, 25, 12, 12, 16] + [20] * len(allowance_types) + [16] + [20] * len(deduction_types) + [16]
+    widths = [6, 12, 25, 12, 12, 16] + [20] * len(allowance_types) + [16]
+    if viewType == "travel":
+        widths += [24]
+    widths += [20] * len(deduction_types) + [16]
     widths += [14, 16, 22, 24] if viewType == "cargo" else []
     widths += [18, 16, 18]
     widths += [18, 18, 18, 23, 20, 18, 18, 18, 28] if viewType == "travel" else [20, 18, 18, 18, 28]
