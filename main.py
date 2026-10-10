@@ -5721,13 +5721,19 @@ def rounded_payroll_overtime_minutes(raw_value: Any) -> int:
     return (hours + 1) * 60
 
 
-def payable_cargo_overtime_minutes(raw_value: Any, lunch_break_hours: Any) -> int:
-    rounded_minutes = rounded_payroll_overtime_minutes(raw_value)
+def payable_cargo_overtime_minutes(total_shift_value: Any, lunch_break_hours: Any) -> int:
+    """Calculate paid overtime from total shift, avoiding the roster's pre-deducted overtime field."""
     try:
         break_minutes = round(max(0.0, min(24.0, float(lunch_break_hours or 0))) * 60)
     except (TypeError, ValueError):
         break_minutes = 0
-    return max(0, rounded_minutes - break_minutes)
+    payable_minutes = max(0, payroll_duration_minutes(total_shift_value) - 8 * 60 - break_minutes)
+    hours, minutes = divmod(payable_minutes, 60)
+    if minutes <= 15:
+        return hours * 60
+    if minutes <= 45:
+        return hours * 60 + 30
+    return (hours + 1) * 60
 
 
 def travel_roster_mark(status: Any) -> str:
@@ -5962,7 +5968,7 @@ def accounting_payroll_rows(month: str, view_type: str) -> dict[str, Any]:
                 key = f"{code}:{day}"
                 if (overrides.get(key) or events.get(key) or "KL") == "X":
                     overtime_minutes += payable_cargo_overtime_minutes(
-                        (overtime_events.get(key) or {}).get("soGioTangCa"),
+                        (overtime_events.get(key) or {}).get("tongSoGioLam"),
                         lunch_break_hours,
                     )
         base_salary = round(float(salary.get("baseSalary") or 0))
@@ -6196,7 +6202,7 @@ def _payroll_detail_sources(month: str, view_type: str, payroll_rows: list[dict[
             work_date = datetime(year, month_number, day)
             mark = attendance_overrides.get(f"{code}:{day}") or attendance_events.get(f"{code}:{day}") or "KL"
             overtime_source = overtime_events.get(f"{code}:{day}") or {}
-            overtime_minutes = payable_cargo_overtime_minutes(overtime_source.get("soGioTangCa"), lunch_break_hours) if view_type == "cargo" and mark == "X" else 0
+            overtime_minutes = payable_cargo_overtime_minutes(overtime_source.get("tongSoGioLam"), lunch_break_hours) if view_type == "cargo" and mark == "X" else 0
             rows.append({
                 "date": work_date,
                 "weekday": weekday_labels[work_date.weekday()],
@@ -6531,7 +6537,7 @@ def _build_driver_payslip_workbook(
     )
     if is_cargo:
         formula_note += "Thưởng đủ công: Nhân Viên Áp Tải 500.000 VNĐ, các chức vụ Xe Hàng khác 1.000.000 VNĐ. "
-        formula_note += "Giờ tăng ca tính lương mỗi ngày = tối đa(Giờ tăng ca ghi nhận - Giờ nghỉ trưa, 0). "
+        formula_note += "Giờ tăng ca tính lương mỗi ngày = tối đa(Tổng giờ lên ca - 8 giờ công chuẩn - Giờ nghỉ trưa, 0), sau đó làm tròn theo quy định. "
         formula_note += "Thưởng ngày công tăng ca = ((Lương cơ bản + Phụ cấp) / Công chuẩn) × 1,5 × Số ngày còn phép. "
     formula_note += "Thực nhận = Lương gộp - Tổng khoản trừ." if is_cargo else "Thưởng đủ công khi Công thực tế + Số ngày lễ đã khai báo ≥ Công chuẩn. Thực nhận = Lương cơ bản theo ngày công thường - Tổng khoản trừ + Thưởng đủ công + Thưởng ngày lễ + Thưởng doanh thu 10% + Thưởng tiết kiệm xăng - Thu vượt định mức."
     summary.cell(current_row, 1, formula_note)
@@ -6587,7 +6593,7 @@ def _build_driver_payslip_workbook(
         attendance.cell(index + 4, 2).number_format = "dd/mm/yyyy"
         attendance.cell(index + 4, len(attendance_headers) - 1).number_format = money_format
         if is_cargo:
-            attendance.cell(index + 4, 9).number_format = "0.##"
+            attendance.cell(index + 4, 9).number_format = "General"
             attendance.cell(index + 4, 10).number_format = "[h]:mm"
             attendance.cell(index + 4, 11).number_format = money_format
     _finish_payslip_detail_sheet(attendance, len(attendance_rows), len(attendance_headers))
@@ -6651,7 +6657,7 @@ def _build_driver_payslip_workbook(
                 overtime.cell(index + 4, column, value)
             overtime.cell(index + 4, 2).number_format = "dd/mm/yyyy"
             overtime.cell(index + 4, 7).number_format = "[h]:mm"
-            overtime.cell(index + 4, 8).number_format = "0.##"
+            overtime.cell(index + 4, 8).number_format = "General"
             overtime.cell(index + 4, 9).number_format = "[h]:mm"
             overtime.cell(index + 4, 10).number_format = money_format
             overtime.cell(index + 4, 11).number_format = money_format
@@ -6971,7 +6977,7 @@ def export_accounting_payroll(request: Request, month: str = "", viewType: str =
                 elif header == "Giờ tăng ca tính lương":
                     cell.number_format = '[h]:mm'
                 elif header == "Giờ nghỉ trưa/ngày":
-                    cell.number_format = '0.##'
+                    cell.number_format = 'General'
         sheet.row_dimensions[index + 3].height = 24
     widths = [6, 12, 25, 12, 12, 16] + [20] * len(allowance_types) + [16]
     if viewType == "travel":
@@ -7196,8 +7202,8 @@ def export_accounting_attendance(request: Request, month: str = "", viewType: st
             except ValueError:
                 return str(raw_value)
 
-        def payable_overtime_value(raw_value: Any, lunch_break_hours: Any) -> timedelta:
-            return timedelta(minutes=payable_cargo_overtime_minutes(raw_value, lunch_break_hours))
+        def payable_overtime_value(total_shift_value: Any, lunch_break_hours: Any) -> timedelta:
+            return timedelta(minutes=payable_cargo_overtime_minutes(total_shift_value, lunch_break_hours))
 
         output_row = 2
         for code, driver in sorted(drivers.items(), key=lambda item: item[1]["name"]):
@@ -7213,7 +7219,7 @@ def export_accounting_attendance(request: Request, month: str = "", viewType: st
                     clock_value(source.get("gioKetThuc")) if is_working else "",
                     duration_value(source.get("tongSoGioLam")) if is_working else "",
                     lunch_break_hours,
-                    payable_overtime_value(source.get("soGioTangCa"), lunch_break_hours) if is_working else "",
+                    payable_overtime_value(source.get("tongSoGioLam"), lunch_break_hours) if is_working else "",
                 ]
                 for column, value in enumerate(values, start=1):
                     cell = overtime_sheet.cell(output_row, column, value)
@@ -7224,7 +7230,7 @@ def export_accounting_attendance(request: Request, month: str = "", viewType: st
                     elif column in {4, 5} and value != "OFF":
                         cell.number_format = "h:mm"
                     elif column == 7:
-                        cell.number_format = "0.##"
+                        cell.number_format = "General"
                     elif column in {6, 8} and value != "":
                         cell.number_format = "[h]:mm"
                 output_row += 1
