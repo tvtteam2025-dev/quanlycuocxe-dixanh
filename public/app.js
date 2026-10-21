@@ -600,6 +600,7 @@ async function checkAppVersion() {
     window.localStorage.setItem(APP_VERSION_STORAGE_KEY, version);
     if (previousVersion && previousVersion !== version && state.authToken) {
       clearAuth("Ứng dụng vừa được cập nhật. Vui lòng đăng nhập lại.");
+      window.location.reload();
       return false;
     }
   } catch (error) {
@@ -3766,6 +3767,7 @@ function loadData(view = state.activeView, force = true) {
 function openOrderDialog() {
   if (!canOperateOrders()) return;
   state.editingOrderId = "";
+  delete els.orderForm.dataset.orderId;
   els.orderForm.dataset.clientOrderId = makeClientOrderId();
   els.orderForm.dataset.mode = "create";
   const title = els.orderForm.querySelector(".panel-title h2");
@@ -3848,6 +3850,7 @@ function openOrderEditDialog(orderId) {
     return;
   }
   state.editingOrderId = String(order.id);
+  els.orderForm.dataset.orderId = String(order.id);
   delete els.orderForm.dataset.clientOrderId;
   els.orderForm.reset();
   els.orderForm.dataset.mode = "edit";
@@ -4882,11 +4885,14 @@ els.exportCommissionsReportButton?.addEventListener("click", () => {
 els.orderCancelButton.addEventListener("click", () => {
   state.editingOrderId = "";
   els.orderForm.dataset.mode = "create";
+  delete els.orderForm.dataset.orderId;
   els.orderDialog.close();
 });
 els.orderDialog.addEventListener("close", () => {
+  if (els.orderDialog.open) return;
   state.editingOrderId = "";
   els.orderForm.dataset.mode = "create";
+  delete els.orderForm.dataset.orderId;
 });
 els.assignVehicleCancelButton.addEventListener("click", () => els.assignVehicleDialog.close());
 els.completeCancelButton.addEventListener("click", () => els.completeDialog.close());
@@ -5583,6 +5589,14 @@ document.querySelector("#debtToggle")?.addEventListener("change", (event) => {
 els.orderForm.addEventListener("submit", async (event) => {
   event.preventDefault();
   if (els.orderForm.dataset.submitting === "true") return;
+  const formMode = els.orderForm.dataset.mode || "create";
+  const editingOrderId = formMode === "edit"
+    ? String(els.orderForm.dataset.orderId || state.editingOrderId || "").trim()
+    : "";
+  if (formMode === "edit" && !editingOrderId) {
+    els.orderFormStatus.textContent = "Không xác định được đơn đang sửa. Vui lòng đóng cửa sổ và mở lại bằng nút Sửa.";
+    return;
+  }
   if (!validateDateTimeInputs(els.orderForm)) {
     els.orderFormStatus.textContent = "Vui lòng nhập thời gian khởi hành dự kiến của đơn hàng.";
     els.orderForm.reportValidity();
@@ -5678,7 +5692,6 @@ els.orderForm.addEventListener("submit", async (event) => {
       payload.diemDon = orderPointsForStorage(payload.diemDon);
       payload.diemTra = orderPointsForStorage(payload.diemTra);
     }
-    const editingOrderId = state.editingOrderId || "";
     payload.clientOrderId = editingOrderId ? "" : (els.orderForm.dataset.clientOrderId || makeClientOrderId());
     els.orderForm.dataset.clientOrderId = payload.clientOrderId;
     await fetchJson(editingOrderId ? `/api/orders/${encodeURIComponent(editingOrderId)}` : "/api/orders", {
@@ -5798,6 +5811,7 @@ document.body.addEventListener("click", (event) => {
         target.disabled = false;
       });
   }
+  if (target?.dataset.action === "edit-order" && canOperateOrders()) openOrderEditDialog(target.dataset.orderId);
   if (target?.dataset.action === "assign-order" && canOperateOrders()) openAssignVehicleDialog(target.dataset.orderId);
   if (target?.dataset.action === "complete-order" && canOperateOrders()) openCompleteDialog(target.dataset.orderId);
   if (target?.dataset.action === "delete-order" && canOperateOrders()) {
@@ -6201,6 +6215,7 @@ function renderOrders() {
         const actions = isDone
           ? `<div class="order-action-stack">${completedActions}</div>`
           : `<div class="order-action-stack">
+              ${canOperateOrders() ? `<button class="small secondary" data-action="edit-order" data-order-id="${escapeHtml(row.id)}" type="button">Sửa</button>` : ""}
               ${canOperateOrders() && can("dispatch") ? `<button class="small secondary" data-action="assign-order" data-order-id="${escapeHtml(row.id)}" type="button">${hasDispatch ? "Sửa điều xe" : "Điều xe"}</button>` : ""}
               ${hasDispatch && driverNotificationSent && canOperateOrders() && can("complete_order") ? `<button class="small" data-action="complete-order" data-order-id="${escapeHtml(row.id)}" type="button">Hoàn thành</button>` : ""}
               ${canOperateOrders() ? `<button class="small danger" data-action="delete-order" data-order-id="${escapeHtml(row.id)}" type="button">Xóa</button>` : ""}
