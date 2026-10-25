@@ -310,6 +310,8 @@ const els = {
   overnightEndInput: document.querySelector("#overnightEndInput"),
   overnightFreeWaitInput: document.querySelector("#overnightFreeWaitInput"),
   overnightMovingHoursInput: document.querySelector("#overnightMovingHoursInput"),
+  overnightOutboundTollInput: document.querySelector("#overnightOutboundTollInput"),
+  overnightReturnTollInput: document.querySelector("#overnightReturnTollInput"),
   overnightResetButton: document.querySelector("#overnightResetButton"),
   overnightCalculatorResult: document.querySelector("#overnightCalculatorResult"),
   voucherTable: document.querySelector("#voucherTable"),
@@ -1134,8 +1136,14 @@ function renderOvernightCalculation(excludedWindowIndexes = new Set()) {
   els.overnightEndInput.classList.remove("invalid");
   const freeWaitHours = Number(els.overnightFreeWaitInput?.value);
   const movingHours = Number(els.overnightMovingHoursInput?.value);
+  const outboundTollFee = Number(els.overnightOutboundTollInput?.value || 0);
+  const returnTollFee = Number(els.overnightReturnTollInput?.value || 0);
   if (!Number.isFinite(freeWaitHours) || freeWaitHours < 0 || !Number.isFinite(movingHours) || movingHours < 0) {
     els.overnightCalculatorResult.innerHTML = `<div class="form-alert error">Tổng giờ chờ miễn phí và tổng giờ xe di chuyển phải là số từ 0 trở lên.</div>`;
+    return;
+  }
+  if (!Number.isFinite(outboundTollFee) || outboundTollFee < 0 || !Number.isFinite(returnTollFee) || returnTollFee < 0) {
+    els.overnightCalculatorResult.innerHTML = `<div class="form-alert error">Phí qua trạm chiều đi và chiều về phải là số tiền từ 0 trở lên.</div>`;
     return;
   }
   const totalUsageHours = (end.getTime() - start.getTime()) / 3600000;
@@ -1153,7 +1161,7 @@ function renderOvernightCalculation(excludedWindowIndexes = new Set()) {
   const normalizedBillableHours = Math.max(billableWaitHours, 0);
   const waitingFee = Math.round(normalizedBillableHours * 50000);
   const overnightFee = selectedWindows.length * 500000;
-  const totalFee = waitingFee + overnightFee;
+  const totalFee = waitingFee + overnightFee + outboundTollFee + returnTollFee;
   const hourText = (value) => value.toLocaleString("vi-VN", { minimumFractionDigits: 0, maximumFractionDigits: 2 });
   const rows = windows.map((item, index) => `
     <tr class="${excludedWindowIndexes.has(index) ? "overnight-window-excluded" : ""}">
@@ -1176,6 +1184,8 @@ function renderOvernightCalculation(excludedWindowIndexes = new Set()) {
     <div class="overnight-cost-breakdown">
       <span>Phí giờ chờ: <strong>${formatMoney(waitingFee)} đ</strong></span>
       <span>Phí lưu đêm: <strong>${formatMoney(overnightFee)} đ</strong></span>
+      <span>Phí qua trạm chiều đi: <strong>${formatMoney(outboundTollFee)} đ</strong></span>
+      <span>Phí qua trạm chiều về: <strong>${formatMoney(returnTollFee)} đ</strong></span>
     </div>
     ${windows.length ? `<div class="table-wrap"><table><thead><tr><th>STT</th><th>Tính lưu đêm</th><th>Bắt đầu khung đêm</th><th>Kết thúc khung đêm</th><th>Thời gian hành trình phát sinh</th><th>Số giờ lưu đêm</th></tr></thead><tbody>${rows}</tbody></table></div>` : `<div class="empty">Hành trình không phát sinh thời gian trong khung 22:00–06:00.</div>`}
   `;

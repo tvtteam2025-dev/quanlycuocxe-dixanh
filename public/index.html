@@ -253,8 +253,10 @@
                 <label class="required"><span>Ngày giờ đến</span><input id="overnightEndInput" class="datetime-input" type="text" inputmode="numeric" placeholder="dd/MM/yyyy hh:mm" maxlength="16" required /></label>
                 <label class="required"><span>Tổng giờ chờ miễn phí</span><input id="overnightFreeWaitInput" type="number" inputmode="decimal" min="0" step="0.01" value="0" required /></label>
                 <label class="required"><span>Tổng giờ xe di chuyển</span><input id="overnightMovingHoursInput" type="number" inputmode="decimal" min="0" step="0.01" value="0" required /></label>
+                <label><span>Phí qua trạm chiều đi (đ)</span><input id="overnightOutboundTollInput" type="number" inputmode="numeric" min="0" step="1" value="0" /></label>
+                <label><span>Phí qua trạm chiều về (đ)</span><input id="overnightReturnTollInput" type="number" inputmode="numeric" min="0" step="1" value="0" /></label>
               </div>
-              <div class="overnight-formula">Công thức: (Tổng giờ sử dụng − giờ di chuyển − giờ chờ miễn phí − tổng giờ lưu đêm) × 50.000đ + số đêm × 500.000đ</div>
+              <div class="overnight-formula">Công thức: (Tổng giờ sử dụng − giờ di chuyển − giờ chờ miễn phí − tổng giờ lưu đêm) × 50.000đ + số đêm × 500.000đ + phí qua trạm chiều đi + phí qua trạm chiều về</div>
               <div class="overnight-actions"><button type="submit">Tính chi phí</button><button id="overnightResetButton" class="secondary" type="button">Nhập lại</button></div>
             </form>
             <div id="overnightCalculatorResult" class="overnight-result" aria-live="polite">
@@ -1727,6 +1729,6 @@
       </form>
     </dialog>
 
-    <script src="/static/app.js?v=order-edit-guard-20261021-1" type="module"></script>
+    <script src="/static/app.js?v=vehicle-toll-fees-20261025-1" type="module"></script>
   </body>
 </html>
