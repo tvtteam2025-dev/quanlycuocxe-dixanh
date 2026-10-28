@@ -18,6 +18,122 @@
   --soft-rose: #fff7f7;
 }
 
+.incident-report-layout {
+  display: grid;
+  gap: 18px;
+}
+
+.incident-report-form {
+  max-width: 980px;
+}
+
+.incident-driver-combobox {
+  position: relative;
+}
+
+.incident-driver-toggle {
+  width: 100%;
+  min-height: 42px;
+  padding: 9px 38px 9px 12px;
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  background: #fff;
+  color: var(--ink);
+  text-align: left;
+  font-weight: 400;
+}
+
+.incident-driver-toggle::after {
+  content: "▾";
+  position: absolute;
+  right: 13px;
+}
+
+.incident-driver-dropdown {
+  position: absolute;
+  z-index: 20;
+  top: calc(100% + 4px);
+  left: 0;
+  width: 100%;
+  padding: 10px;
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  background: #fff;
+  box-shadow: 0 12px 30px rgb(15 23 42 / 18%);
+}
+
+.incident-driver-search {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.incident-driver-search button {
+  min-width: 72px;
+}
+
+.incident-driver-options {
+  max-height: 260px;
+  overflow-y: auto;
+  border-top: 1px solid var(--line);
+  padding-top: 6px;
+}
+
+.incident-driver-option {
+  display: block;
+  width: 100%;
+  padding: 9px 10px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--ink);
+  text-align: left;
+  font-weight: 400;
+}
+
+.incident-driver-option:hover,
+.incident-driver-option.selected {
+  background: #eff6ff;
+  color: #1d4ed8;
+}
+
+.incident-driver-empty {
+  padding: 12px 10px;
+  color: var(--muted);
+  text-align: center;
+}
+
+.incident-deadline-note {
+  margin-top: 14px;
+  padding: 12px 14px;
+  border: 1px solid #bfdbfe;
+  border-radius: 10px;
+  background: #eff6ff;
+  color: #1e3a8a;
+  font-size: 0.92rem;
+}
+
+.incident-report-list table {
+  min-width: 1120px;
+}
+
+.incident-content-cell {
+  min-width: 220px;
+  max-width: 360px;
+}
+
+.incident-content-cell summary {
+  color: #2563eb;
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.incident-content-cell p {
+  margin: 8px 0 0;
+  white-space: pre-wrap;
+}
+
 * {
   box-sizing: border-box;
 }

@@ -12,6 +12,10 @@ const state = {
   users: [],
   reopenRequests: [],
   systemLogs: [],
+  incidentReports: [],
+  incidentTypes: [],
+  incidentReporters: [],
+  incidentDrivers: [],
   systemCatalogs: [],
   systemCatalogsLoaded: false,
   roster: [],
@@ -94,6 +98,7 @@ const pageMeta = {
   permissions: ["Phân quyền", "Quản lý tài khoản và reset mật khẩu người dùng."],
   systemLogs: ["Lịch sử thay đổi", "Theo dõi tài khoản và nội dung đã thay đổi trên hệ thống."],
   systemCatalogs: ["Quản trị hệ thống", "Quản lý các danh mục dùng chung trong toàn bộ ứng dụng."],
+  incidentReports: ["Biên bản", "Tạo và theo dõi biên bản theo luồng Điều hành - Nhân sự - Trình ký."],
 };
 
 const systemLogActionLabels = {
@@ -130,6 +135,7 @@ const systemLogActionLabels = {
   update_calendar_vehicle_order: "Sắp xếp lịch điều xe",
   reset_calendar_vehicle_order: "Khôi phục thứ tự lịch điều xe",
   delete_cskh_shift_report: "Xóa báo cáo ca CSKH",
+  create_incident_report: "Tạo biên bản",
 };
 
 const systemLogFieldLabels = {
@@ -338,6 +344,25 @@ const els = {
   systemLogTable: document.querySelector("#systemLogTable"),
   systemLogSearch: document.querySelector("#systemLogSearch"),
   systemLogActionFilter: document.querySelector("#systemLogActionFilter"),
+  incidentReportTable: document.querySelector("#incidentReportTable"),
+  incidentReportDialog: document.querySelector("#incidentReportDialog"),
+  incidentReportForm: document.querySelector("#incidentReportForm"),
+  openIncidentReportDialogButton: document.querySelector("#openIncidentReportDialogButton"),
+  incidentReportCancelButton: document.querySelector("#incidentReportCancelButton"),
+  incidentReportType: document.querySelector("#incidentReportType"),
+  incidentReporterSelect: document.querySelector("#incidentReporterSelect"),
+  incidentDriverCombobox: document.querySelector("#incidentDriverCombobox"),
+  incidentDriverToggle: document.querySelector("#incidentDriverToggle"),
+  incidentDriverDropdown: document.querySelector("#incidentDriverDropdown"),
+  incidentDriverSearch: document.querySelector("#incidentDriverSearch"),
+  incidentDriverSearchButton: document.querySelector("#incidentDriverSearchButton"),
+  incidentDriverOptions: document.querySelector("#incidentDriverOptions"),
+  incidentDriverSelect: document.querySelector("#incidentDriverSelect"),
+  incidentDriverCode: document.querySelector("#incidentDriverCode"),
+  incidentRecordedAt: document.querySelector("#incidentRecordedAt"),
+  incidentDeadlineAt: document.querySelector("#incidentDeadlineAt"),
+  incidentReportStatus: document.querySelector("#incidentReportStatus"),
+  incidentReportSubmitButton: document.querySelector("#incidentReportSubmitButton"),
   dispatchSummary: document.querySelector("#dispatchSummary"),
   dispatchTable: document.querySelector("#dispatchTable"),
   customerSearch: document.querySelector("#customerSearch"),
@@ -725,6 +750,7 @@ function applyPermissions() {
   });
 
   if (els.openUserDialogButton) els.openUserDialogButton.hidden = !can("manage_users");
+  if (els.openIncidentReportDialogButton) els.openIncidentReportDialogButton.hidden = !can("create_incident_reports");
 
   if (els.exportDriverRemittanceButton) {
     els.exportDriverRemittanceButton.hidden = !["reports_all", "reports_revenue", "export_excel"].some((action) =>
@@ -3633,6 +3659,73 @@ function renderSystemCatalogs() {
     .join("") || `<tr><td colspan="6" class="empty">Danh mục chưa có dữ liệu.</td></tr>`;
 }
 
+function renderIncidentDriverOptions(query = "") {
+  if (!els.incidentDriverSelect || !els.incidentDriverOptions) return;
+  const selected = els.incidentDriverSelect.value;
+  const keyword = String(query || "").trim().toLocaleLowerCase("vi");
+  const drivers = keyword
+    ? state.incidentDrivers.filter((item) => `${item.name} ${item.code} ${item.label}`.toLocaleLowerCase("vi").includes(keyword))
+    : state.incidentDrivers;
+  els.incidentDriverSelect.innerHTML = [
+    `<option value="">${drivers.length ? "Chọn lái xe / nhân viên" : "Không tìm thấy nhân viên phù hợp"}</option>`,
+    ...drivers.map((item) => `<option value="${escapeHtml(`${item.name}|||${item.code}`)}">${escapeHtml(item.label)}</option>`),
+  ].join("");
+  if (drivers.some((item) => `${item.name}|||${item.code}` === selected)) els.incidentDriverSelect.value = selected;
+  else syncIncidentDriverSelection();
+  els.incidentDriverOptions.innerHTML = drivers.length
+    ? drivers.map((item) => {
+        const value = `${item.name}|||${item.code}`;
+        return `<button class="incident-driver-option${value === selected ? " selected" : ""}" type="button" data-driver-value="${escapeHtml(value)}">${escapeHtml(item.label)}</button>`;
+      }).join("")
+    : `<div class="incident-driver-empty">Không tìm thấy nhân viên phù hợp</div>`;
+}
+
+function renderIncidentReports() {
+  if (els.incidentReportType) {
+    const selected = els.incidentReportType.value;
+    els.incidentReportType.innerHTML = selectOptions(state.incidentTypes, selected, "Chọn loại biên bản");
+  }
+  if (els.incidentReporterSelect) {
+    els.incidentReporterSelect.value = state.currentUser?.displayName || state.currentUser?.username || "";
+  }
+  renderIncidentDriverOptions(els.incidentDriverSearch?.value || "");
+  if (!els.incidentReportTable) return;
+  els.incidentReportTable.innerHTML = state.incidentReports
+    .map((row) => `
+      <tr>
+        <td><strong>${escapeHtml(row.soBienBan || "")}</strong><div class="muted">${escapeHtml(row.ngayGhiNhan || "")}</div></td>
+        <td>${escapeHtml(row.boPhanLapBienBan || "")}<div class="muted">${escapeHtml(row.nguoiGhiNhan || "")}</div></td>
+        <td><strong>${escapeHtml(row.nguoiBiViPham || "")}</strong><div class="muted">${escapeHtml(row.MSNV || "")}</div></td>
+        <td><span class="pill">${escapeHtml(row.loaiViPham || "")}</span></td>
+        <td>${escapeHtml(row.thoiHanXuLy || "")}</td>
+        <td>${row.tienDoBienBan ? `<span class="pill running">${escapeHtml(row.tienDoBienBan)}</span>` : ""}</td>
+        <td class="incident-content-cell"><details><summary>Xem nội dung</summary><p>${escapeHtml(row.noiDungGhiNhanSuViec || "")}</p>${row.chuThich ? `<p class="muted">${escapeHtml(row.chuThich)}</p>` : ""}</details></td>
+      </tr>
+    `)
+    .join("") || `<tr><td colspan="7" class="empty">Chưa có biên bản.</td></tr>`;
+}
+
+function syncIncidentDriverSelection() {
+  if (!els.incidentDriverSelect || !els.incidentReportForm) return;
+  const selected = state.incidentDrivers.find(
+    (item) => `${item.name}|||${item.code}` === els.incidentDriverSelect.value,
+  );
+  els.incidentReportForm.elements.nguoiBiViPham.value = selected?.name || "";
+  els.incidentReportForm.elements.MSNV.value = selected?.code || "";
+  if (els.incidentDriverToggle) els.incidentDriverToggle.textContent = selected?.label || "Chọn lái xe / nhân viên";
+}
+
+function syncIncidentDeadline() {
+  if (!els.incidentRecordedAt || !els.incidentDeadlineAt) return;
+  const recordedAt = parseDateTime(els.incidentRecordedAt.value);
+  if (!recordedAt || Number.isNaN(recordedAt.getTime())) return;
+  const incidentType = String(els.incidentReportType?.value || "").trim().toLocaleLowerCase("vi");
+  const deadline = new Date(recordedAt);
+  if (incidentType === "sự cố va chạm") deadline.setDate(deadline.getDate() + 30);
+  else deadline.setHours(deadline.getHours() + (recordedAt.getDay() === 0 ? 48 : 24));
+  els.incidentDeadlineAt.value = formatDateTimeForInput(deadline);
+}
+
 function renderAll() {
   renderDashboard();
   renderCustomers();
@@ -3651,6 +3744,7 @@ function renderAll() {
   renderPermissions();
   renderSystemCatalogs();
   renderSystemLogs();
+  renderIncidentReports();
   renderOrderOptions();
   applyPermissions();
   if (document.querySelector("#calendarView")?.classList.contains("active")) renderCalendar();
@@ -3677,6 +3771,7 @@ const viewDataSources = {
   reopenApprovals: ["reopenRequests"],
   systemCatalogs: ["systemCatalogs"],
   systemLogs: ["systemLogs"],
+  incidentReports: ["incidentReports"],
 };
 
 const dataSourceDefinitions = {
@@ -3699,6 +3794,7 @@ const dataSourceDefinitions = {
   users: ["tài khoản", "/api/users"],
   reopenRequests: ["yêu cầu mở lại", "/api/reopen-requests"],
   systemLogs: ["lịch sử thay đổi", "/api/logs"],
+  incidentReports: ["biên bản", "/api/incident-reports"],
 };
 
 const loadDataPromises = new Map();
@@ -3741,6 +3837,11 @@ async function loadDataOnce(view = state.activeView, force = true) {
       const [key, label] = sources[index];
       if (result.status === "fulfilled") {
         state[key] = key === "contractPricing" ? result.value.config : (result.value.rows || []);
+        if (key === "incidentReports") {
+          state.incidentTypes = result.value.types || [];
+          state.incidentReporters = result.value.reporters || [];
+          state.incidentDrivers = result.value.drivers || [];
+        }
         state.loadedSources.add(key);
         if (key === "systemCatalogs") state.systemCatalogsLoaded = true;
       } else {
@@ -4605,6 +4706,94 @@ els.logoutButton?.addEventListener("click", async () => {
 
 els.refreshButton.addEventListener("click", loadData);
 els.refreshButton.addEventListener("click", () => loadNotifications());
+els.openIncidentReportDialogButton?.addEventListener("click", () => {
+  if (!can("create_incident_reports")) return;
+  els.incidentReportForm?.reset();
+  if (els.incidentReportStatus) els.incidentReportStatus.textContent = "";
+  renderIncidentReports();
+  const now = localNowForInput();
+  if (els.incidentRecordedAt) els.incidentRecordedAt.value = now;
+  syncIncidentDeadline();
+  if (els.incidentDriverDropdown) els.incidentDriverDropdown.hidden = true;
+  if (els.incidentDriverToggle) els.incidentDriverToggle.setAttribute("aria-expanded", "false");
+  els.incidentReportDialog?.showModal();
+});
+els.incidentDriverToggle?.addEventListener("click", () => {
+  if (!els.incidentDriverDropdown) return;
+  const willOpen = els.incidentDriverDropdown.hidden;
+  els.incidentDriverDropdown.hidden = !willOpen;
+  els.incidentDriverToggle.setAttribute("aria-expanded", String(willOpen));
+  if (willOpen) {
+    renderIncidentDriverOptions(els.incidentDriverSearch?.value);
+    window.setTimeout(() => els.incidentDriverSearch?.focus(), 0);
+  }
+});
+els.incidentDriverSearchButton?.addEventListener("click", () => renderIncidentDriverOptions(els.incidentDriverSearch?.value));
+els.incidentDriverSearch?.addEventListener("input", () => renderIncidentDriverOptions(els.incidentDriverSearch?.value));
+els.incidentDriverOptions?.addEventListener("click", (event) => {
+  const option = event.target.closest("[data-driver-value]");
+  if (!option || !els.incidentDriverSelect) return;
+  els.incidentDriverSelect.value = option.dataset.driverValue || "";
+  syncIncidentDriverSelection();
+  renderIncidentDriverOptions("");
+  if (els.incidentDriverSearch) els.incidentDriverSearch.value = "";
+  if (els.incidentDriverDropdown) els.incidentDriverDropdown.hidden = true;
+  els.incidentDriverToggle?.setAttribute("aria-expanded", "false");
+});
+document.addEventListener("click", (event) => {
+  if (!els.incidentDriverCombobox?.contains(event.target) && els.incidentDriverDropdown) {
+    els.incidentDriverDropdown.hidden = true;
+    els.incidentDriverToggle?.setAttribute("aria-expanded", "false");
+  }
+});
+els.incidentDriverSelect?.addEventListener("change", syncIncidentDriverSelection);
+els.incidentRecordedAt?.addEventListener("change", syncIncidentDeadline);
+els.incidentReportType?.addEventListener("change", syncIncidentDeadline);
+els.incidentReportCancelButton?.addEventListener("click", () => els.incidentReportDialog?.close());
+els.incidentReportForm?.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  if (!els.incidentDriverSelect?.value) {
+    els.incidentReportStatus.textContent = "Vui lòng chọn người bị lập biên bản.";
+    els.incidentDriverDropdown.hidden = false;
+    els.incidentDriverToggle?.setAttribute("aria-expanded", "true");
+    els.incidentDriverSearch?.focus();
+    return;
+  }
+  if (!can("create_incident_reports") || !els.incidentReportForm.reportValidity()) return;
+  const data = new FormData(els.incidentReportForm);
+  els.incidentReportSubmitButton.disabled = true;
+  els.incidentReportStatus.textContent = "Đang lưu biên bản...";
+  try {
+    await fetchJson("/api/incident-reports", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        boPhanLapBienBan: data.get("boPhanLapBienBan"),
+        soBienBan: data.get("soBienBan"),
+        nguoiBiViPham: data.get("nguoiBiViPham"),
+        MSNV: data.get("MSNV"),
+        ngayGhiNhan: data.get("ngayGhiNhan"),
+        thoiHanXuLy: data.get("thoiHanXuLy"),
+        loaiViPham: data.get("loaiViPham"),
+        noiDungGhiNhanSuViec: data.get("noiDungGhiNhanSuViec"),
+        chuThich: data.get("chuThich"),
+      }),
+    });
+    els.incidentReportForm.reset();
+    els.incidentReportStatus.textContent = "Đã tạo biên bản.";
+    const refreshed = await fetchJson("/api/incident-reports", {}, 90000);
+    state.incidentReports = refreshed.rows || [];
+    state.incidentTypes = refreshed.types || [];
+    state.incidentReporters = refreshed.reporters || [];
+    state.incidentDrivers = refreshed.drivers || [];
+    renderIncidentReports();
+    els.incidentReportDialog?.close();
+  } catch (error) {
+    els.incidentReportStatus.textContent = error.message || "Không tạo được biên bản.";
+  } finally {
+    els.incidentReportSubmitButton.disabled = false;
+  }
+});
 els.cskhShiftReportForm?.elements.caLamViec?.addEventListener("change", syncCskhShiftForm);
 els.cskhShiftReportForm?.elements.ngay?.addEventListener("change", prefillCskhB2cOrderTotal);
 els.cskhShiftReportFromInput?.addEventListener("change", renderCskhShiftReports);

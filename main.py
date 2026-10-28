@@ -60,6 +60,7 @@ DEFAULT_ADMIN_USERNAME = os.getenv("DEFAULT_ADMIN_USERNAME", "admin")
 DEFAULT_ADMIN_PASSWORD = os.getenv("DEFAULT_ADMIN_PASSWORD", "")
 _GSPREAD_CLIENT: Any | None = None
 _SPREADSHEET: Any | None = None
+_INCIDENT_SPREADSHEET: Any | None = None
 _LEGACY_SPREADSHEET: Any | None = None
 _WORKSHEET_CACHE: dict[str, Any] = {}
 _HEADER_CHECKED_SHEETS: set[str] = set()
@@ -108,6 +109,19 @@ CALENDAR_VEHICLE_ORDER_SHEET_NAME = os.getenv("CALENDAR_VEHICLE_ORDER_SHEET_NAME
 CONTRACT_PRICING_SHEET_NAME = os.getenv("CONTRACT_PRICING_SHEET_NAME", "BANG_GIA_HOP_DONG")
 HR_CONTRACTS_SHEET_NAME = os.getenv("HR_CONTRACTS_SHEET_NAME", "HOP_DONG_NHAN_SU")
 COMPANY_STAFF_SHEET_NAME = os.getenv("COMPANY_STAFF_SHEET_NAME", "NHAN_SU_CTY")
+INCIDENT_SPREADSHEET_ID = os.getenv(
+    "INCIDENT_SPREADSHEET_ID",
+    "1ERIqWqoR7-MAgJLu1PJSkobMHjeKUjYH_dVTbo58PZI",
+)
+INCIDENT_TRACKING_SHEET_NAME = os.getenv("INCIDENT_TRACKING_SHEET_NAME", "THEO_DOI_BIEN_BAN")
+INCIDENT_DROPDOWN_SHEET_NAME = os.getenv("INCIDENT_DROPDOWN_SHEET_NAME", "DROPDOWN")
+INCIDENT_HEADERS = [
+    "stt", "boPhanLapBienBan", "nguoiGhiNhan", "soBienBan", "ngayGhiNhan",
+    "thoiHanXuLy", "tienDoBienBan", "nguoiBiViPham", "MSNV", "loaiViPham",
+    "noiDungGhiNhanSuViec", "thoiGianXuLyDieuHanh", "noiDungXuLyDieuHanh",
+    "ghiChuDieuHanh", "hinhThucXuLy", "mucPhatTien", "thoiGianXuLyNhanSu",
+    "ghiChuNhanSu", "trinhKy", "raQuyetDinh", "soQuyetDinh", "fileDinhKem", "chuThich",
+]
 ATTENDANCE_OVERRIDES_SHEET_NAME = os.getenv("ATTENDANCE_OVERRIDES_SHEET_NAME", "DIEU_CHINH_CHAM_CONG")
 ATTENDANCE_OVERRIDE_HEADERS = ["month", "viewType", "employeeCode", "day", "mark", "updatedBy", "updatedAt"]
 PAYROLL_LOCKS_SHEET_NAME = os.getenv("PAYROLL_LOCKS_SHEET_NAME", "CHOT_BANG_LUONG")
@@ -173,6 +187,7 @@ ROLE_PERMISSIONS = {
             "systemCatalogs",
             "cskhShiftReports",
             "driverAreas",
+            "incidentReports",
         ],
         "actions": [
             "manage_users",
@@ -200,6 +215,7 @@ ROLE_PERMISSIONS = {
             "manage_payroll_deductions",
             "lock_payroll",
             "manage_driver_areas",
+            "create_incident_reports",
         ],
     },
     "ke_toan": {
@@ -216,6 +232,7 @@ ROLE_PERMISSIONS = {
             "reports",
             "overnightCalculator",
             "driverAreas",
+            "incidentReports",
         ],
         "actions": [
             "manage_invoices",
@@ -233,6 +250,7 @@ ROLE_PERMISSIONS = {
             "manage_payroll_deductions",
             "lock_payroll",
             "manage_driver_areas",
+            "create_incident_reports",
         ],
     },
     "cskh": {
@@ -250,6 +268,7 @@ ROLE_PERMISSIONS = {
             "invoiceOrders",
             "orderFeedback",
             "cskhShiftReports",
+            "incidentReports",
         ],
         "actions": [
             "edit_data",
@@ -261,6 +280,7 @@ ROLE_PERMISSIONS = {
             "export_orders",
             "export_customers",
             "manage_order_feedback",
+            "create_incident_reports",
         ],
     },
     "marketing": {
@@ -282,6 +302,7 @@ ROLE_PERMISSIONS = {
             "vehicles",
             "franchiseVehicles",
             "invoiceOrders",
+            "incidentReports",
         ],
         "actions": ["reports_all", "export_excel"],
     },
@@ -957,6 +978,8 @@ def request_path_allowed_for_role(request: Request, user: dict[str, Any]) -> boo
         return role in {"admin", "cskh"}
     if path.startswith("/api/order-feedback") and method in {"POST", "PUT", "PATCH", "DELETE"}:
         return role in {"admin", "cskh"} and has_action(user, "manage_order_feedback")
+    if path == "/api/incident-reports" and method == "POST":
+        return role in {"admin", "cskh", "ke_toan"} and has_action(user, "create_incident_reports")
     if method in {"POST", "PUT", "PATCH", "DELETE"}:
         if role == "admin":
             return True
@@ -1137,6 +1160,18 @@ class OrderFeedbackInput(BaseModel):
     hinhThucXuLy: str = ""
     ketQuaXuLy: str = ""
     chuThich: str = ""
+
+
+class IncidentReportInput(BaseModel):
+    boPhanLapBienBan: str = Field(min_length=1, max_length=120)
+    soBienBan: str = Field(min_length=1, max_length=80)
+    nguoiBiViPham: str = Field(min_length=1, max_length=160)
+    MSNV: str = Field(min_length=1, max_length=80)
+    ngayGhiNhan: str = Field(min_length=1, max_length=40)
+    thoiHanXuLy: str = Field(min_length=1, max_length=40)
+    loaiViPham: str = Field(min_length=1, max_length=160)
+    noiDungGhiNhanSuViec: str = Field(min_length=1, max_length=3000)
+    chuThich: str = Field(default="", max_length=1000)
 
 
 class AssignVehicleInput(BaseModel):
@@ -1488,6 +1523,67 @@ def get_spreadsheet() -> Any:
     if _SPREADSHEET is None:
         _SPREADSHEET = get_gspread_client().open_by_key(SHEET_ID)
     return _SPREADSHEET
+
+
+def get_incident_spreadsheet() -> Any:
+    global _INCIDENT_SPREADSHEET
+    if _INCIDENT_SPREADSHEET is None:
+        _INCIDENT_SPREADSHEET = get_gspread_client().open_by_key(INCIDENT_SPREADSHEET_ID)
+    return _INCIDENT_SPREADSHEET
+
+
+def incident_tracking_worksheet() -> Any:
+    return get_incident_spreadsheet().worksheet(INCIDENT_TRACKING_SHEET_NAME)
+
+
+def incident_type_values() -> list[str]:
+    values = get_incident_spreadsheet().worksheet(INCIDENT_DROPDOWN_SHEET_NAME).col_values(19)
+    return [str(value).strip() for value in values[1:] if str(value).strip()]
+
+
+def incident_report_records() -> list[dict[str, Any]]:
+    values = incident_tracking_worksheet().get_all_values()
+    if not values:
+        return []
+    headers = [str(value).strip() for value in values[0]]
+    return [
+        dict(zip(headers, row + [""] * max(0, len(headers) - len(row))))
+        for row in values[1:]
+        if any(str(value).strip() for value in row)
+    ]
+
+
+def incident_deadline(recorded_at: datetime, incident_type: str) -> datetime:
+    if normalize_text(incident_type) == normalize_text("Sự cố va chạm"):
+        return recorded_at + timedelta(days=30)
+    return recorded_at + timedelta(hours=48 if recorded_at.weekday() == 6 else 24)
+
+
+def format_incident_datetime(value: datetime) -> str:
+    return value.strftime("%d/%m/%Y %H:%M")
+
+
+def incident_reporter_names() -> list[str]:
+    names = {
+        str(row.get("displayName") or "").strip()
+        for row in user_rows_cached()
+        if str(row.get("displayName") or "").strip()
+        and normalize_text(row.get("status")) in {"", "active", "dang hoat dong", "hoat dong"}
+    }
+    return sorted(names, key=normalize_text)
+
+
+def incident_driver_options() -> list[dict[str, str]]:
+    options: dict[str, dict[str, str]] = {}
+    for row in roster_rows():
+        label = roster_driver_text(row)
+        if not label:
+            continue
+        name = roster_driver_name(label)
+        code = roster_driver_code(label)
+        key = normalize_text(f"{name}|{code}")
+        options[key] = {"label": label, "name": name, "code": code}
+    return sorted(options.values(), key=lambda item: normalize_text(item["label"]))
 
 
 def get_legacy_spreadsheet() -> Any | None:
@@ -8105,6 +8201,85 @@ def list_orders(forceRefresh: bool = False) -> dict[str, Any]:
 def list_order_feedback() -> dict[str, Any]:
     rows = worksheet_records(order_feedback_worksheet(), ORDER_FEEDBACK_HEADERS)
     return {"sheetName": ORDER_FEEDBACK_SHEET_NAME, "rows": rows, "fetchedAt": now_iso()}
+
+
+@app.get("/api/incident-reports")
+def list_incident_reports() -> dict[str, Any]:
+    rows = incident_report_records()
+    return {
+        "sheetName": INCIDENT_TRACKING_SHEET_NAME,
+        "rows": list(reversed(rows)),
+        "types": incident_type_values(),
+        "reporters": incident_reporter_names(),
+        "drivers": incident_driver_options(),
+        "fetchedAt": now_iso(),
+    }
+
+
+@app.post("/api/incident-reports")
+def create_incident_report(request: Request, payload: IncidentReportInput) -> dict[str, Any]:
+    user = current_user(request)
+    rows = incident_report_records()
+    report_number = payload.soBienBan.strip()
+    if any(normalize_text(row.get("soBienBan")) == normalize_text(report_number) for row in rows):
+        raise HTTPException(status_code=409, detail="Số biên bản đã tồn tại.")
+
+    types = incident_type_values()
+    incident_type = payload.loaiViPham.strip()
+    if incident_type not in types:
+        raise HTTPException(status_code=422, detail="Loại biên bản không thuộc danh mục cột S sheet DROPDOWN.")
+
+    reporter = str(user.get("displayName") or user.get("username") or "").strip()
+    if not reporter:
+        raise HTTPException(status_code=422, detail="Không xác định được displayName của tài khoản đăng nhập.")
+
+    driver_name = payload.nguoiBiViPham.strip()
+    driver_code = payload.MSNV.strip()
+    valid_driver = any(
+        normalize_text(item["name"]) == normalize_text(driver_name)
+        and normalize_text(item["code"]) == normalize_text(driver_code)
+        for item in incident_driver_options()
+    )
+    if not valid_driver:
+        raise HTTPException(status_code=422, detail="Người bị lập biên bản phải chọn từ hoTenMSNVLaiXe trong DANH_SACH_LEN_CA.")
+
+    recorded_at = parse_datetime(payload.ngayGhiNhan)
+    deadline = parse_datetime(payload.thoiHanXuLy)
+    sequence = max([int(str(row.get("stt") or "0")) for row in rows if str(row.get("stt") or "").isdigit()] or [0]) + 1
+    record = {
+        "stt": sequence,
+        "boPhanLapBienBan": reporter,
+        "nguoiGhiNhan": str(user.get("displayName") or user.get("username") or "").strip(),
+        "soBienBan": report_number,
+        "ngayGhiNhan": format_incident_datetime(recorded_at),
+        "thoiHanXuLy": format_incident_datetime(deadline),
+        "tienDoBienBan": "",
+        "nguoiBiViPham": driver_name,
+        "MSNV": driver_code,
+        "loaiViPham": incident_type,
+        "noiDungGhiNhanSuViec": payload.noiDungGhiNhanSuViec.strip(),
+        "thoiGianXuLyDieuHanh": "",
+        "chuThich": payload.chuThich.strip(),
+    }
+    try:
+        incident_tracking_worksheet().append_row(
+            [record.get(header, "") for header in INCIDENT_HEADERS],
+            value_input_option="RAW",
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="Không thể ghi biên bản vào Google Sheet. Hãy kiểm tra quyền Editor của service account.",
+        ) from exc
+    log_action(
+        request,
+        "create_incident_report",
+        "incidentReport",
+        report_number,
+        note=f"{incident_type} - {payload.nguoiBiViPham.strip()}",
+        after=record,
+    )
+    return {"ok": True, "row": record}
 
 
 @app.get("/api/cskh-shift-reports")
