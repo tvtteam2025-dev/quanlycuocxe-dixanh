@@ -8262,8 +8262,20 @@ def create_incident_report(request: Request, payload: IncidentReportInput) -> di
         "chuThich": payload.chuThich.strip(),
     }
     try:
-        incident_tracking_worksheet().append_row(
-            [record.get(header, "") for header in INCIDENT_HEADERS],
+        worksheet = incident_tracking_worksheet()
+        target_row = max(len(worksheet.col_values(4)) + 1, 2)
+        last_cell = gspread.utils.rowcol_to_a1(target_row, len(INCIDENT_HEADERS))
+        worksheet.batch_update(
+            [
+                {
+                    "range": f"A{target_row}:F{target_row}",
+                    "values": [[record.get(header, "") for header in INCIDENT_HEADERS[:6]]],
+                },
+                {
+                    "range": f"H{target_row}:{last_cell}",
+                    "values": [[record.get(header, "") for header in INCIDENT_HEADERS[7:]]],
+                },
+            ],
             value_input_option="RAW",
         )
     except Exception as exc:
