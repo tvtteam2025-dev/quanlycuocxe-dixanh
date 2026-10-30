@@ -13,6 +13,7 @@ const state = {
   reopenRequests: [],
   systemLogs: [],
   incidentReports: [],
+  incidentCurrentDepartment: "",
   incidentTypes: [],
   incidentReporters: [],
   incidentDrivers: [],
@@ -3686,7 +3687,7 @@ function renderIncidentReports() {
     els.incidentReportType.innerHTML = selectOptions(state.incidentTypes, selected, "Chọn loại biên bản");
   }
   if (els.incidentReporterSelect) {
-    els.incidentReporterSelect.value = state.currentUser?.displayName || state.currentUser?.username || "";
+    els.incidentReporterSelect.value = state.incidentCurrentDepartment || "";
   }
   renderIncidentDriverOptions(els.incidentDriverSearch?.value || "");
   if (!els.incidentReportTable) return;
@@ -3841,6 +3842,7 @@ async function loadDataOnce(view = state.activeView, force = true) {
           state.incidentTypes = result.value.types || [];
           state.incidentReporters = result.value.reporters || [];
           state.incidentDrivers = result.value.drivers || [];
+          state.incidentCurrentDepartment = result.value.currentDepartment || "";
         }
         state.loadedSources.add(key);
         if (key === "systemCatalogs") state.systemCatalogsLoaded = true;
@@ -4786,6 +4788,7 @@ els.incidentReportForm?.addEventListener("submit", async (event) => {
     state.incidentTypes = refreshed.types || [];
     state.incidentReporters = refreshed.reporters || [];
     state.incidentDrivers = refreshed.drivers || [];
+    state.incidentCurrentDepartment = refreshed.currentDepartment || "";
     renderIncidentReports();
     els.incidentReportDialog?.close();
   } catch (error) {

@@ -115,6 +115,7 @@ INCIDENT_SPREADSHEET_ID = os.getenv(
 )
 INCIDENT_TRACKING_SHEET_NAME = os.getenv("INCIDENT_TRACKING_SHEET_NAME", "THEO_DOI_BIEN_BAN")
 INCIDENT_DROPDOWN_SHEET_NAME = os.getenv("INCIDENT_DROPDOWN_SHEET_NAME", "DROPDOWN")
+INCIDENT_MAIN_SHEET_NAME = os.getenv("INCIDENT_MAIN_SHEET_NAME", "MAIN")
 INCIDENT_HEADERS = [
     "stt", "boPhanLapBienBan", "nguoiGhiNhan", "soBienBan", "ngayGhiNhan",
     "thoiHanXuLy", "tienDoBienBan", "nguoiBiViPham", "MSNV", "loaiViPham",
@@ -1551,6 +1552,44 @@ def incident_report_records() -> list[dict[str, Any]]:
         for row in values[1:]
         if any(str(value).strip() for value in row)
     ]
+
+
+def incident_reporter_department(user: dict[str, Any], required: bool = True) -> str:
+    values = get_incident_spreadsheet().worksheet(INCIDENT_MAIN_SHEET_NAME).get_all_values()
+    if values:
+        normalized_headers = [normalize_text(value).replace(" ", "") for value in values[0]]
+
+        def column_index(name: str) -> int | None:
+            try:
+                return normalized_headers.index(name)
+            except ValueError:
+                return None
+
+        name_index = column_index("hoten")
+        name_code_index = column_index("hotenmanv")
+        code_index = column_index("manv")
+        department_index = column_index("phongban")
+        display_name = normalize_text(user.get("displayName"))
+        username = normalize_text(user.get("username"))
+        candidates = {value for value in (display_name, username) if value}
+        if department_index is not None and candidates:
+            for row in values[1:]:
+                row_values = row + [""] * max(0, len(values[0]) - len(row))
+                identities = {
+                    normalize_text(row_values[index])
+                    for index in (name_index, name_code_index, code_index)
+                    if index is not None and str(row_values[index]).strip()
+                }
+                if candidates.intersection(identities):
+                    department = str(row_values[department_index]).strip()
+                    if department:
+                        return department
+    if required:
+        raise HTTPException(
+            status_code=422,
+            detail="Không tìm thấy phòng ban của tài khoản đăng nhập trong cột AG sheet MAIN.",
+        )
+    return ""
 
 
 def incident_deadline(recorded_at: datetime, incident_type: str) -> datetime:
@@ -8204,14 +8243,16 @@ def list_order_feedback() -> dict[str, Any]:
 
 
 @app.get("/api/incident-reports")
-def list_incident_reports() -> dict[str, Any]:
+def list_incident_reports(request: Request) -> dict[str, Any]:
     rows = incident_report_records()
+    user = current_user(request)
     return {
         "sheetName": INCIDENT_TRACKING_SHEET_NAME,
         "rows": list(reversed(rows)),
         "types": incident_type_values(),
         "reporters": incident_reporter_names(),
         "drivers": incident_driver_options(),
+        "currentDepartment": incident_reporter_department(user, required=False),
         "fetchedAt": now_iso(),
     }
 
@@ -8229,9 +8270,10 @@ def create_incident_report(request: Request, payload: IncidentReportInput) -> di
     if incident_type not in types:
         raise HTTPException(status_code=422, detail="Loại biên bản không thuộc danh mục cột S sheet DROPDOWN.")
 
-    reporter = str(user.get("displayName") or user.get("username") or "").strip()
-    if not reporter:
+    recorder_name = str(user.get("displayName") or user.get("username") or "").strip()
+    if not recorder_name:
         raise HTTPException(status_code=422, detail="Không xác định được displayName của tài khoản đăng nhập.")
+    reporter_department = incident_reporter_department(user)
 
     driver_name = payload.nguoiBiViPham.strip()
     driver_code = payload.MSNV.strip()
@@ -8248,8 +8290,8 @@ def create_incident_report(request: Request, payload: IncidentReportInput) -> di
     sequence = max([int(str(row.get("stt") or "0")) for row in rows if str(row.get("stt") or "").isdigit()] or [0]) + 1
     record = {
         "stt": sequence,
-        "boPhanLapBienBan": reporter,
-        "nguoiGhiNhan": str(user.get("displayName") or user.get("username") or "").strip(),
+        "boPhanLapBienBan": reporter_department,
+        "nguoiGhiNhan": recorder_name,
         "soBienBan": report_number,
         "ngayGhiNhan": format_incident_datetime(recorded_at),
         "thoiHanXuLy": format_incident_datetime(deadline),
