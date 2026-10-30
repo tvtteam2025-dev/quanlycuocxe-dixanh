@@ -123,6 +123,7 @@ INCIDENT_HEADERS = [
     "noiDungGhiNhanSuViec", "thoiGianXuLyDieuHanh", "noiDungXuLyDieuHanh",
     "ghiChuDieuHanh", "hinhThucXuLy", "mucPhatTien", "thoiGianXuLyNhanSu",
     "ghiChuNhanSu", "trinhKy", "raQuyetDinh", "soQuyetDinh", "fileDinhKem", "chuThich",
+    "truLuongThang",
 ]
 ATTENDANCE_OVERRIDES_SHEET_NAME = os.getenv("ATTENDANCE_OVERRIDES_SHEET_NAME", "DIEU_CHINH_CHAM_CONG")
 ATTENDANCE_OVERRIDE_HEADERS = ["month", "viewType", "employeeCode", "day", "mark", "updatedBy", "updatedAt"]
@@ -982,6 +983,8 @@ def request_path_allowed_for_role(request: Request, user: dict[str, Any]) -> boo
         return role in {"admin", "cskh"} and has_action(user, "manage_order_feedback")
     if path == "/api/incident-reports" and method == "POST":
         return role in {"admin", "cskh", "ke_toan"} and has_action(user, "create_incident_reports")
+    if path.startswith("/api/incident-reports/") and path.endswith("/payroll-deduction") and method == "PUT":
+        return role in {"admin", "ke_toan"}
     if method in {"POST", "PUT", "PATCH", "DELETE"}:
         if role == "admin":
             return True
@@ -1174,6 +1177,10 @@ class IncidentReportInput(BaseModel):
     loaiViPham: str = Field(min_length=1, max_length=160)
     noiDungGhiNhanSuViec: str = Field(min_length=1, max_length=3000)
     chuThich: str = Field(default="", max_length=1000)
+
+
+class IncidentPayrollDeductionInput(BaseModel):
+    month: str = Field(pattern=r"^\d{4}-\d{2}$")
 
 
 class AssignVehicleInput(BaseModel):
@@ -8335,6 +8342,98 @@ def create_incident_report(request: Request, payload: IncidentReportInput) -> di
         after=record,
     )
     return {"ok": True, "row": record}
+
+
+@app.put("/api/incident-reports/{incident_id}/payroll-deduction")
+def link_incident_payroll_deduction(
+    incident_id: str,
+    payload: IncidentPayrollDeductionInput,
+    request: Request,
+) -> dict[str, Any]:
+    user = current_user(request)
+    if str(user.get("role") or "") not in {"admin", "ke_toan"}:
+        raise HTTPException(status_code=403, detail="Chỉ bộ phận Kế toán được xác nhận trừ lương.")
+
+    worksheet = incident_tracking_worksheet()
+    row_number = find_row_by_id(worksheet, incident_id)
+    incident = next(
+        (row for row in incident_report_records() if str(row.get("id") or "").strip() == incident_id),
+        None,
+    )
+    if row_number is None or not incident:
+        raise HTTPException(status_code=404, detail="Không tìm thấy biên bản.")
+
+    amount = round(localized_number(incident.get("mucPhatTien")))
+    if amount <= 0:
+        raise HTTPException(status_code=422, detail="Biên bản chưa có mức phạt tiền hợp lệ.")
+    employee_code = str(incident.get("MSNV") or "").strip().upper()
+    employee_name = str(incident.get("nguoiBiViPham") or "").strip()
+    if not employee_code:
+        raise HTTPException(status_code=422, detail="Biên bản chưa có mã nhân viên để trừ lương.")
+
+    view_type = "travel"
+    deduction_id = f"incident-{incident_id}"
+    deduction_worksheet = payroll_deductions_worksheet()
+    deduction_row_number = find_row_by_id(deduction_worksheet, deduction_id)
+    existing = (
+        row_by_id(
+            worksheet_records(deduction_worksheet, PAYROLL_DEDUCTION_HEADERS, force_refresh=True),
+            deduction_id,
+        )
+        if deduction_row_number is not None
+        else None
+    ) or {}
+    existing_month = str(existing.get("month") or "").strip()
+    existing_view_type = str(existing.get("viewType") or view_type).strip() or view_type
+    if existing_month and payroll_lock_for(existing_month, existing_view_type):
+        raise HTTPException(status_code=409, detail="Tháng trừ lương hiện tại đã chốt, không thể thay đổi.")
+    if payroll_lock_for(payload.month, view_type):
+        raise HTTPException(status_code=409, detail="Tháng đã chốt lương, không thể thêm khoản trừ vi phạm.")
+
+    operator = current_user_display_name(request)
+    timestamp = now_iso()
+    deduction = {
+        **existing,
+        "id": deduction_id,
+        "month": payload.month,
+        "viewType": view_type,
+        "employeeCode": employee_code,
+        "employeeName": _payroll_deduction_driver_name(employee_code, employee_name),
+        "deductionType": "Vi phạm",
+        "amount": amount,
+        "note": f"Biên bản {str(incident.get('soBienBan') or incident_id).strip()}",
+        "createdBy": existing.get("createdBy") or operator,
+        "createdAt": existing.get("createdAt") or timestamp,
+        "updatedBy": operator if existing else "",
+        "updatedAt": timestamp if existing else "",
+        "status": "active",
+    }
+    if deduction_row_number is None:
+        append_worksheet_row(
+            deduction_worksheet,
+            [deduction.get(header, "") for header in PAYROLL_DEDUCTION_HEADERS],
+        )
+    else:
+        update_row_by_headers(
+            deduction_worksheet,
+            deduction_row_number,
+            PAYROLL_DEDUCTION_HEADERS,
+            deduction,
+        )
+    invalidate_worksheet_cache(deduction_worksheet)
+
+    month_column = INCIDENT_HEADERS.index("truLuongThang") + 1
+    month_cell = gspread.utils.rowcol_to_a1(row_number, month_column)
+    worksheet.update(month_cell, [[payload.month]], value_input_option="RAW")
+    log_action(
+        request,
+        "link_incident_payroll_deduction",
+        "incidentReport",
+        incident_id,
+        note=f"{payload.month} - {employee_code} - {amount}",
+        after={"truLuongThang": payload.month, "payrollDeduction": deduction},
+    )
+    return {"ok": True, "month": payload.month, "deduction": deduction}
 
 
 @app.get("/api/cskh-shift-reports")
