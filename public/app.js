@@ -3700,10 +3700,26 @@ function renderIncidentReports() {
         <td><span class="pill">${escapeHtml(row.loaiViPham || "")}</span></td>
         <td>${escapeHtml(row.thoiHanXuLy || "")}</td>
         <td>${row.tienDoBienBan ? `<span class="pill running">${escapeHtml(row.tienDoBienBan)}</span>` : ""}</td>
-        <td class="incident-content-cell"><details><summary>Xem nội dung</summary><p>${escapeHtml(row.noiDungGhiNhanSuViec || "")}</p>${row.chuThich ? `<p class="muted">${escapeHtml(row.chuThich)}</p>` : ""}</details></td>
+        <td><strong>${row.mucPhatTien ? `${escapeHtml(formatMoney(row.mucPhatTien) || row.mucPhatTien)} đ` : "—"}</strong></td>
+        <td>${row.trinhKy ? `<span class="pill">${escapeHtml(row.trinhKy)}</span>` : "—"}</td>
+        <td class="incident-content-cell"><details><summary>Xem chi tiết</summary><div class="incident-detail-grid">
+          <div><span>Nội dung ghi nhận</span><strong>${escapeHtml(row.noiDungGhiNhanSuViec || "—")}</strong></div>
+          <div><span>Chú thích</span><strong>${escapeHtml(row.chuThich || "—")}</strong></div>
+          <div><span>Thời gian xử lý Điều hành</span><strong>${escapeHtml(row.thoiGianXuLyDieuHanh || "—")}</strong></div>
+          <div><span>Nội dung xử lý Điều hành</span><strong>${escapeHtml(row.noiDungXuLyDieuHanh || "—")}</strong></div>
+          <div><span>Ghi chú Điều hành</span><strong>${escapeHtml(row.ghiChuDieuHanh || "—")}</strong></div>
+          <div><span>Hình thức xử lý</span><strong>${escapeHtml(row.hinhThucXuLy || "—")}</strong></div>
+          <div><span>Mức phạt tiền</span><strong>${row.mucPhatTien ? `${escapeHtml(formatMoney(row.mucPhatTien) || row.mucPhatTien)} đ` : "—"}</strong></div>
+          <div><span>Thời gian xử lý Nhân sự</span><strong>${escapeHtml(row.thoiGianXuLyNhanSu || "—")}</strong></div>
+          <div><span>Ghi chú Nhân sự</span><strong>${escapeHtml(row.ghiChuNhanSu || "—")}</strong></div>
+          <div><span>Trạng thái trình ký</span><strong>${escapeHtml(row.trinhKy || "—")}</strong></div>
+          <div><span>Ra quyết định</span><strong>${escapeHtml(row.raQuyetDinh || "—")}</strong></div>
+          <div><span>Số quyết định</span><strong>${escapeHtml(row.soQuyetDinh || "—")}</strong></div>
+          <div><span>File đính kèm</span><strong>${escapeHtml(row.fileDinhKem || "—")}</strong></div>
+        </div></details></td>
       </tr>
     `)
-    .join("") || `<tr><td colspan="7" class="empty">Chưa có biên bản.</td></tr>`;
+    .join("") || `<tr><td colspan="9" class="empty">Chưa có biên bản.</td></tr>`;
 }
 
 function syncIncidentDriverSelection() {

@@ -115,7 +115,7 @@
 }
 
 .incident-report-list table {
-  min-width: 1120px;
+  min-width: 1480px;
 }
 
 .incident-content-cell {
@@ -133,6 +133,22 @@
   margin: 8px 0 0;
   white-space: pre-wrap;
 }
+
+.incident-detail-grid {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(2, minmax(190px, 1fr));
+  width: min(560px, 70vw);
+  margin-top: 10px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #f8fafc;
+}
+
+.incident-detail-grid div { display: grid; gap: 3px; }
+.incident-detail-grid span { color: var(--muted); font-size: .78rem; }
+.incident-detail-grid strong { white-space: pre-wrap; font-size: .88rem; }
 
 * {
   box-sizing: border-box;
