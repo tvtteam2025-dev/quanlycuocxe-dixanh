@@ -11,6 +11,7 @@ import sqlite3
 import threading
 import time
 import unicodedata
+import uuid
 import zipfile
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, time as datetime_time, timedelta, timezone
@@ -117,7 +118,7 @@ INCIDENT_TRACKING_SHEET_NAME = os.getenv("INCIDENT_TRACKING_SHEET_NAME", "THEO_D
 INCIDENT_DROPDOWN_SHEET_NAME = os.getenv("INCIDENT_DROPDOWN_SHEET_NAME", "DROPDOWN")
 INCIDENT_MAIN_SHEET_NAME = os.getenv("INCIDENT_MAIN_SHEET_NAME", "MAIN")
 INCIDENT_HEADERS = [
-    "stt", "boPhanLapBienBan", "nguoiGhiNhan", "soBienBan", "ngayGhiNhan",
+    "stt", "id", "boPhanLapBienBan", "nguoiGhiNhan", "soBienBan", "ngayGhiNhan",
     "thoiHanXuLy", "tienDoBienBan", "nguoiBiViPham", "MSNV", "loaiViPham",
     "noiDungGhiNhanSuViec", "thoiGianXuLyDieuHanh", "noiDungXuLyDieuHanh",
     "ghiChuDieuHanh", "hinhThucXuLy", "mucPhatTien", "thoiGianXuLyNhanSu",
@@ -8287,9 +8288,9 @@ def create_incident_report(request: Request, payload: IncidentReportInput) -> di
 
     recorded_at = parse_datetime(payload.ngayGhiNhan)
     deadline = parse_datetime(payload.thoiHanXuLy)
-    sequence = max([int(str(row.get("stt") or "0")) for row in rows if str(row.get("stt") or "").isdigit()] or [0]) + 1
     record = {
-        "stt": sequence,
+        "stt": "",
+        "id": str(uuid.uuid4()),
         "boPhanLapBienBan": reporter_department,
         "nguoiGhiNhan": recorder_name,
         "soBienBan": report_number,
@@ -8305,17 +8306,17 @@ def create_incident_report(request: Request, payload: IncidentReportInput) -> di
     }
     try:
         worksheet = incident_tracking_worksheet()
-        target_row = max(len(worksheet.col_values(4)) + 1, 2)
+        target_row = max(len(worksheet.col_values(5)) + 1, 2)
         last_cell = gspread.utils.rowcol_to_a1(target_row, len(INCIDENT_HEADERS))
         worksheet.batch_update(
             [
                 {
-                    "range": f"A{target_row}:F{target_row}",
-                    "values": [[record.get(header, "") for header in INCIDENT_HEADERS[:6]]],
+                    "range": f"B{target_row}:G{target_row}",
+                    "values": [[record.get(header, "") for header in INCIDENT_HEADERS[1:7]]],
                 },
                 {
-                    "range": f"H{target_row}:{last_cell}",
-                    "values": [[record.get(header, "") for header in INCIDENT_HEADERS[7:]]],
+                    "range": f"I{target_row}:{last_cell}",
+                    "values": [[record.get(header, "") for header in INCIDENT_HEADERS[8:]]],
                 },
             ],
             value_input_option="RAW",
