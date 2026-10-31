@@ -983,7 +983,7 @@ def request_path_allowed_for_role(request: Request, user: dict[str, Any]) -> boo
         return role in {"admin", "cskh"} and has_action(user, "manage_order_feedback")
     if path == "/api/incident-reports" and method == "POST":
         return role in {"admin", "cskh", "ke_toan"} and has_action(user, "create_incident_reports")
-    if path.startswith("/api/incident-reports/") and path.endswith("/payroll-deduction") and method == "PUT":
+    if path.startswith("/api/incident-reports/") and path.endswith("/payroll-deduction") and method in {"PUT", "DELETE"}:
         return role in {"admin", "ke_toan"}
     if method in {"POST", "PUT", "PATCH", "DELETE"}:
         if role == "admin":
@@ -8434,6 +8434,67 @@ def link_incident_payroll_deduction(
         after={"truLuongThang": payload.month, "payrollDeduction": deduction},
     )
     return {"ok": True, "month": payload.month, "deduction": deduction}
+
+
+@app.delete("/api/incident-reports/{incident_id}/payroll-deduction")
+def revoke_incident_payroll_deduction(incident_id: str, request: Request) -> dict[str, Any]:
+    user = current_user(request)
+    if str(user.get("role") or "") not in {"admin", "ke_toan"}:
+        raise HTTPException(status_code=403, detail="Chỉ bộ phận Kế toán được thu hồi khoản trừ lương.")
+
+    worksheet = incident_tracking_worksheet()
+    row_number = find_row_by_id(worksheet, incident_id)
+    incident = next(
+        (row for row in incident_report_records() if str(row.get("id") or "").strip() == incident_id),
+        None,
+    )
+    if row_number is None or not incident:
+        raise HTTPException(status_code=404, detail="Không tìm thấy biên bản.")
+
+    deduction_id = f"incident-{incident_id}"
+    deduction_worksheet = payroll_deductions_worksheet()
+    deduction_row_number = find_row_by_id(deduction_worksheet, deduction_id)
+    existing = (
+        row_by_id(
+            worksheet_records(deduction_worksheet, PAYROLL_DEDUCTION_HEADERS, force_refresh=True),
+            deduction_id,
+        )
+        if deduction_row_number is not None
+        else None
+    ) or {}
+    month = str(existing.get("month") or incident.get("truLuongThang") or "").strip()
+    view_type = str(existing.get("viewType") or "travel").strip() or "travel"
+    if month and payroll_lock_for(month, view_type):
+        raise HTTPException(status_code=409, detail="Tháng đã chốt lương, không thể thu hồi khoản trừ.")
+
+    if deduction_row_number is not None:
+        revoked = {
+            **existing,
+            "id": deduction_id,
+            "status": "Đã xóa",
+            "updatedBy": current_user_display_name(request),
+            "updatedAt": now_iso(),
+        }
+        update_row_by_headers(
+            deduction_worksheet,
+            deduction_row_number,
+            PAYROLL_DEDUCTION_HEADERS,
+            revoked,
+        )
+        invalidate_worksheet_cache(deduction_worksheet)
+
+    month_column = INCIDENT_HEADERS.index("truLuongThang") + 1
+    month_cell = gspread.utils.rowcol_to_a1(row_number, month_column)
+    worksheet.update(month_cell, [[""]], value_input_option="RAW")
+    log_action(
+        request,
+        "revoke_incident_payroll_deduction",
+        "incidentReport",
+        incident_id,
+        note=f"{month} - {str(incident.get('MSNV') or '').strip()}",
+        after={"truLuongThang": "", "deductionStatus": "Đã xóa"},
+    )
+    return {"ok": True, "month": month}
 
 
 @app.get("/api/cskh-shift-reports")
