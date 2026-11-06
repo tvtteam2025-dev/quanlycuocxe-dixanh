@@ -137,7 +137,9 @@ FUEL_RECORDS_SHEET_NAME = os.getenv("FUEL_RECORDS_SHEET_NAME", "DO_XANG_LAI_XE_T
 FUEL_RECORD_HEADERS = ["id", "ngay", "employeeCode", "employeeName", "bienKiemSoat", "loaiNhienLieu", "soLit", "donGiaLit", "thanhTien", "soKmTaplo", "soKmDaChay", "createdBy", "createdAt", "updatedBy", "updatedAt", "status"]
 CAR_WASH_SHEET_NAME = os.getenv("CAR_WASH_SHEET_NAME", "RUA_XE_TRAVEL")
 CAR_WASH_HEADERS = ["id", "ngay", "employeeCode", "employeeName", "bienKiemSoat", "soTien", "ghiChu", "createdBy", "createdAt", "updatedBy", "updatedAt", "status"]
-FUEL_STANDARD_RATE = 0.075
+VEHICLE_INFO_SHEET_NAME = os.getenv("VEHICLE_INFO_SHEET_NAME", "THONG_TIN_XE")
+FUEL_STANDARD_RATE = 0.07
+FUEL_INNOVA_STANDARD_RATE = 0.075
 FUEL_SAVING_THRESHOLD_LIT = 5.0
 FUEL_OVERUSE_FREE_LIT = 10.0
 FUEL_SAVING_BONUS = 500_000
@@ -2567,6 +2569,11 @@ def fuel_standard_rows(month: str) -> dict[str, Any]:
     if normalize_text(price_row.get("status")) in {"da xoa", "deleted", "inactive"}:
         price_row = {}
     current_price = max(0, round(localized_number(price_row.get("donGiaLit"))))
+    vehicle_models = {
+        fuel_plate_key(row.get("bienKiemSoat")): str(row.get("nhanHieuXe") or "").strip()
+        for row in read_public_sheet(VEHICLE_INFO_SHEET_NAME)
+        if fuel_plate_key(row.get("bienKiemSoat"))
+    }
     totals: dict[str, dict[str, Any]] = {}
     for row in active_fuel_records():
         if str(row.get("ngay") or "")[:7] != month:
@@ -2574,24 +2581,29 @@ def fuel_standard_rows(month: str) -> dict[str, Any]:
         code = str(row.get("employeeCode") or "").strip().upper()
         if not code:
             continue
-        item = totals.setdefault(code, {"employeeCode": code, "employeeName": str(row.get("employeeName") or code), "bienKiemSoat": str(row.get("bienKiemSoat") or ""), "totalKm": 0.0, "totalLit": 0.0})
-        item["totalKm"] += max(0, localized_number(row.get("soKmDaChay")))
+        item = totals.setdefault(code, {"employeeCode": code, "employeeName": str(row.get("employeeName") or code), "bienKiemSoat": str(row.get("bienKiemSoat") or ""), "totalKm": 0.0, "totalLit": 0.0, "standardLit": 0.0})
+        distance = max(0, localized_number(row.get("soKmDaChay")))
+        vehicle_model = vehicle_models.get(fuel_plate_key(row.get("bienKiemSoat")), "")
+        rate = FUEL_INNOVA_STANDARD_RATE if normalize_text(vehicle_model) == "toyota innova" else FUEL_STANDARD_RATE
+        item["totalKm"] += distance
+        item["standardLit"] += distance * rate
         item["totalLit"] += max(0, localized_number(row.get("soLit")))
         if not item["employeeName"] or item["employeeName"] == code:
             item["employeeName"] = str(row.get("employeeName") or code)
         if row.get("bienKiemSoat"):
             item["bienKiemSoat"] = str(row.get("bienKiemSoat"))
     for driver in travel_fuel_drivers():
-        totals.setdefault(driver["employeeCode"], {"employeeCode": driver["employeeCode"], "employeeName": driver["employeeName"], "bienKiemSoat": driver.get("bienKiemSoat", ""), "totalKm": 0.0, "totalLit": 0.0})
+        totals.setdefault(driver["employeeCode"], {"employeeCode": driver["employeeCode"], "employeeName": driver["employeeName"], "bienKiemSoat": driver.get("bienKiemSoat", ""), "totalKm": 0.0, "totalLit": 0.0, "standardLit": 0.0})
     result = []
     for item in sorted(totals.values(), key=lambda row: normalize_text(row["employeeName"])):
-        standard_lit = item["totalKm"] * FUEL_STANDARD_RATE
+        standard_lit = item["standardLit"]
+        effective_rate = standard_lit / item["totalKm"] if item["totalKm"] > 0 else FUEL_STANDARD_RATE
         difference_lit = item["totalLit"] - standard_lit
         overuse_lit = max(0.0, difference_lit - FUEL_OVERUSE_FREE_LIT)
         saving_lit = max(0.0, -difference_lit)
         result.append({
             **item,
-            "standardRate": FUEL_STANDARD_RATE,
+            "standardRate": round(effective_rate, 5),
             "standardLit": round(standard_lit, 2),
             "differenceLit": round(difference_lit, 2),
             "overuseLit": round(overuse_lit, 2),
@@ -2599,7 +2611,7 @@ def fuel_standard_rows(month: str) -> dict[str, Any]:
             "savingLit": round(saving_lit, 2),
             "savingBonus": FUEL_SAVING_BONUS if saving_lit > FUEL_SAVING_THRESHOLD_LIT else 0,
         })
-    return {"month": month, "standardRate": FUEL_STANDARD_RATE, "price": current_price, "priceDeclared": bool(price_row and normalize_text(price_row.get("status")) not in {"da xoa", "deleted", "inactive"}), "rows": result, "locked": bool(lock), "lockedBy": str(lock.get("lockedBy") or "") if lock else "", "lockedAt": str(lock.get("lockedAt") or "") if lock else ""}
+    return {"month": month, "standardRate": FUEL_STANDARD_RATE, "innovaStandardRate": FUEL_INNOVA_STANDARD_RATE, "price": current_price, "priceDeclared": bool(price_row and normalize_text(price_row.get("status")) not in {"da xoa", "deleted", "inactive"}), "rows": result, "locked": bool(lock), "lockedBy": str(lock.get("lockedBy") or "") if lock else "", "lockedAt": str(lock.get("lockedAt") or "") if lock else ""}
 
 
 def driver_salaries_worksheet() -> Any:
