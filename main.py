@@ -2115,9 +2115,41 @@ def all_order_records(force_refresh: bool = False) -> list[dict[str, Any]]:
 
 def all_shared_ride_records() -> list[dict[str, Any]]:
     records = deduplicate_records_by_id(worksheet_records(shared_ride_worksheet(), SHARED_RIDE_HEADERS))
+    expected_by_order: dict[str, int] = {}
+    for order in worksheet_records(orders_worksheet(), ORDER_HEADERS):
+        order_id = str(order.get("id") or "").strip()
+        try:
+            expected_count = max(0, int(float(str(order.get("soVe") or "0").replace(",", "."))))
+        except (TypeError, ValueError):
+            expected_count = 0
+        if order_id and expected_count:
+            expected_by_order[order_id] = expected_count
+
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    unlinked: list[dict[str, Any]] = []
     for record in records:
+        order_id = str(record.get("donHangId") or "").strip()
+        if order_id:
+            grouped.setdefault(order_id, []).append(record)
+        else:
+            unlinked.append(record)
+
+    current_records = list(unlinked)
+    for order_id, passengers in grouped.items():
+        expected_count = expected_by_order.get(order_id, 0)
+        if expected_count and len(passengers) > expected_count:
+            # Một lần edit cũ có thể để lại nhiều ID active cho cùng một vé.
+            # Luôn ưu tiên các bản được tạo mới nhất và không để báo cáo nhân đôi.
+            passengers = sorted(
+                passengers,
+                key=lambda row: (str(row.get("createdAt") or ""), str(row.get("id") or "")),
+                reverse=True,
+            )[:expected_count]
+        current_records.extend(passengers)
+
+    for record in current_records:
         record["giaNiemYet"] = record.get("GiaNiemYet", "")
-    return records
+    return current_records
 
 
 def sync_customer_profile_to_current_orders(
@@ -12946,13 +12978,17 @@ def update_shared_order(
     for duplicate_row_number in duplicate_row_numbers or []:
         soft_delete_row(worksheet, duplicate_row_number, ORDER_HEADERS, order, request)
     shared_worksheet = shared_ride_worksheet()
-    soft_delete_matching_rows(
-        shared_worksheet,
-        SHARED_RIDE_HEADERS,
-        lambda row: str(row.get("donHangId") or "") == str(order_id),
-        current_user_display_name(request),
-    )
-    append_worksheet_rows(shared_worksheet, shared_rows)
+    # Khóa trọn giao dịch thay thế khách xe ghép. Nếu hai request edit chạy gần
+    # nhau, request sau phải nhìn thấy và vô hiệu hóa bản vừa được request trước
+    # tạo ra, thay vì để lại hai ID active cho cùng một vé.
+    with worksheet_write_lock(shared_worksheet):
+        soft_delete_matching_rows(
+            shared_worksheet,
+            SHARED_RIDE_HEADERS,
+            lambda row: str(row.get("donHangId") or "") == str(order_id),
+            current_user_display_name(request),
+        )
+        append_worksheet_rows(shared_worksheet, shared_rows)
     if new_customer_rows:
         append_worksheet_rows(customers_worksheet(), new_customer_rows)
     preserve_benefit_driver_revenue_snapshots(benefit_rows, existing_benefit_usage)
